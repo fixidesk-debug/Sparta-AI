@@ -1,0 +1,19 @@
+groups:
+  - name: sparta.rules
+    rules:
+      - alert: BackendDown
+        expr: up{job="sparta-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Sparta backend is down"
+          description: "Instance {{ $labels.instance }} of job {{ $labels.job }} is down"
+      - alert: HighErrorRate
+        expr: increase(http_requests_total{job="sparta-backend",status=~"5.."}[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High 5xx error rate"
+          description: "High number of 5xx responses in the last 5m"

@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'sparta-backend'
+    static_configs:
+      - targets: ['sparta-backend-prod:8000']
+  - job_name: 'sparta-frontend'
+    static_configs:
+      - targets: ['sparta-frontend-prod:80']

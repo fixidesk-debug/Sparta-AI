@@ -1,0 +1,56 @@
+name: CD - Production
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      - name: Login to Docker Registry
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push images
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/sparta-backend:latest
+      - name: Push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/sparta-frontend:latest
+      - name: Configure kubectl (K8s creds must be in secrets)
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.30.0'
+      - name: Blue-Green deploy
+        env:
+          KUBECONFIG: ${{ secrets.KUBECONFIG_PROD }}
+          IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/sparta-backend:latest
+        run: |
+          chmod +x infra/ci-scripts/blue_green_deploy.sh
+          ./infra/ci-scripts/blue_green_deploy.sh sparta-backend $IMAGE sparta
+      - name: Post-deploy smoke tests
+        run: |
+          # Basic health check
+          curl -fS https://sparta.local/ || (echo 'Smoke test failed' && exit 1)
+      - name: Notify success
+        uses: rtCamp/action-slack-notify@v2
+        with:
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          status: ${{ job.status }}

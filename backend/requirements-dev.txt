@@ -1,0 +1,10 @@
+pytest
+pytest-asyncio
+httpx
+psycopg2-binary
+pytest-cov
+pytest-mock
+requests-mock
+factory-boy
+pytest-postgresql
+pytest-docker

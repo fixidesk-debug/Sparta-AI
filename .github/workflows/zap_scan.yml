@@ -1,0 +1,23 @@
+name: OWASP ZAP API Scan
+
+on:
+  workflow_dispatch:
+
+jobs:
+  zap-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start OWASP ZAP Docker
+        run: |
+          docker run -d --name owasp-zap -p 8090:8090 owasp/zap2docker-stable zap.sh -daemon -port 8090 -host 0.0.0.0
+      - name: Wait for ZAP
+        run: |
+          sleep 10
+      - name: Run quick spider + active scan
+        run: |
+          docker run --net=host --rm owasp/zap2docker-stable zap-full-scan.py -t https://sparta.local -r zap_report.html
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: zap_report.html

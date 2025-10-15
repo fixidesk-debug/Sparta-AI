@@ -1,0 +1,209 @@
+@import 'tokens';
+@import 'mixins';
+
+// Main Container
+.glass-container {
+  @include glass-effect(0.1, 12px);
+  border-radius: map-get($radius, xl);
+  padding: space(xl);
+  box-shadow: map-get($shadows, glass-md), map-get($shadows, inner);
+}
+
+// Chat Bubbles
+.chat-bubble {
+  @include glass-effect(0.08, 8px);
+  border-radius: map-get($radius, lg);
+  padding: space(md) space(lg);
+  margin-bottom: space(md);
+  @include smooth-transition(transform, background);
+  
+  &:hover {
+    background: rgba(255, 255, 255, 0.12);
+    transform: translateX(4px);
+  }
+  
+  &--user {
+    background: color(glass-blue);
+    border-left: 3px solid color(blue-electric);
+  }
+  
+  &--ai {
+    background: color(glass-white);
+  }
+}
+
+// Navigation Sidebar
+.nav-sidebar {
+  @include glass-dark(0.7, 16px);
+  height: 100vh;
+  width: 280px;
+  padding: space(lg);
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.2);
+  
+  &__item {
+    @include glass-effect(0.05, 8px);
+    border-radius: map-get($radius, md);
+    padding: space(sm) space(md);
+    margin-bottom: space(sm);
+    @include smooth-transition(all);
+    @include focus-ring;
+    
+    &:hover {
+      background: rgba(255, 255, 255, 0.15);
+      transform: translateX(4px);
+      box-shadow: map-get($shadows, glow-blue);
+    }
+    
+    &--active {
+      background: color(glass-blue);
+      border-left: 3px solid color(blue-electric);
+    }
+  }
+}
+
+// Upload Area
+.upload-area {
+  @include glass-effect(0.06, 12px);
+  border: 2px dashed rgba(255, 255, 255, 0.3);
+  border-radius: map-get($radius, lg);
+  padding: space(2xl);
+  text-align: center;
+  @include smooth-transition(all);
+  
+  &:hover {
+    border-color: color(blue-electric);
+    background: rgba(37, 99, 235, 0.08);
+    box-shadow: map-get($shadows, glow-blue);
+  }
+  
+  &--active {
+    border-color: color(blue-bright);
+    background: rgba(37, 99, 235, 0.15);
+    animation: pulse 2s infinite;
+  }
+}
+
+// Data Visualization Container
+.data-viz {
+  @include glass-effect(0.08, 12px);
+  border-radius: map-get($radius, lg);
+  padding: space(lg);
+  box-shadow: map-get($shadows, glass-md);
+  position: relative;
+  overflow: hidden;
+  
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, color(blue-electric), transparent);
+  }
+}
+
+// Button System
+.btn {
+  @include glass-effect(0.1, 8px);
+  border-radius: map-get($radius, md);
+  padding: space(sm) space(lg);
+  font-weight: map-get($font-weight, medium);
+  border: none;
+  cursor: pointer;
+  @include smooth-transition(all);
+  @include focus-ring;
+  
+  &:hover {
+    background: rgba(255, 255, 255, 0.18);
+    transform: translateY(-2px) scale(1.02);
+    box-shadow: map-get($shadows, glass-md);
+  }
+  
+  &:active {
+    transform: translateY(0) scale(0.98);
+  }
+  
+  &--primary {
+    background: linear-gradient(135deg, color(blue-electric), color(blue-bright));
+    color: color(white-pure);
+    box-shadow: map-get($shadows, glow-blue);
+    
+    &:hover {
+      box-shadow: 0 0 30px rgba(37, 99, 235, 0.5);
+    }
+  }
+  
+  &--ghost {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    
+    &:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: color(blue-electric);
+    }
+  }
+}
+
+// Loading Shimmer
+.loading-shimmer {
+  @include glass-effect(0.08, 12px);
+  border-radius: map-get($radius, md);
+  height: 60px;
+  position: relative;
+  overflow: hidden;
+  
+  &::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+    animation: shimmer 2s infinite;
+  }
+}
+
+// Modal Overlay
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 14, 39, 0.8);
+  backdrop-filter: blur(map-get($blur, xl));
+  -webkit-backdrop-filter: blur(map-get($blur, xl));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn map-get($transition, base);
+  
+  &__content {
+    @include glass-effect(0.15, 16px);
+    border-radius: map-get($radius, xl);
+    padding: space(2xl);
+    max-width: 600px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    animation: slideUp map-get($transition, slow);
+  }
+}
+
+// Animations
+@keyframes shimmer {
+  to { left: 100%; }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.8; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}

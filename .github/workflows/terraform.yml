@@ -1,0 +1,55 @@
+name: Terraform
+
+on:
+  pull_request:
+    paths:
+      - 'infra/terraform/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  terraform-plan:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.0
+      - name: Terraform Init
+        working-directory: infra/terraform
+        run: terraform init -input=false
+      - name: Terraform Validate
+        working-directory: infra/terraform
+        run: terraform validate
+      - name: Terraform Plan
+        working-directory: infra/terraform
+        run: |
+          terraform plan -out=tfplan -input=false
+      - name: Upload plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: infra/terraform/tfplan
+
+  terraform-apply:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    environment:
+      name: production
+      url: https://console.aws.amazon.com/
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.0
+      - name: Terraform Init
+        working-directory: infra/terraform
+        run: terraform init -input=false
+      - name: Terraform Apply (auto-approve)
+        working-directory: infra/terraform
+        run: terraform apply -input=false -auto-approve
