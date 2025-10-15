@@ -14,6 +14,7 @@ interface AdvancedCodeBlockProps {
   codeBlock: CodeBlockType;
   onExecute?: (code: string, language: string) => Promise<string>;
   onCopy?: () => void;
+  onError?: (err: Error | string, context?: { messageId?: string }) => void;
   messageId?: string;
 }
 
@@ -21,21 +22,38 @@ export const AdvancedCodeBlock: React.FC<AdvancedCodeBlockProps> = ({
   codeBlock,
   onExecute,
   onCopy,
+  onError,
   messageId,
 }) => {
   const [isCollapsed, setIsCollapsed] = useState(codeBlock.isCollapsed);
   const [isExecuting, setIsExecuting] = useState(false);
   const [executionOutput, setExecutionOutput] = useState(codeBlock.output);
   const [isCopied, setIsCopied] = useState(false);
+  const copyTimeoutRef = React.useRef<number | undefined>(undefined);
+
+  React.useEffect(() => {
+    return () => {
+      // cleanup any pending timeouts
+      if (copyTimeoutRef.current) {
+        window.clearTimeout(copyTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const handleCopy = async () => {
     try {
+      if (!navigator?.clipboard?.writeText) {
+        throw new Error('Clipboard API not available');
+      }
       await navigator.clipboard.writeText(codeBlock.code);
       setIsCopied(true);
       onCopy?.();
-      setTimeout(() => setIsCopied(false), 2000);
+      // store timeout id so we can cleanup on unmount
+      copyTimeoutRef.current = window.setTimeout(() => setIsCopied(false), 2000);
     } catch (err) {
-      console.error('Failed to copy code:', err);
+      const error = err instanceof Error ? err : new Error(String(err));
+      console.error('Failed to copy code:', error);
+      onError?.(error, { messageId });
     }
   };
 
@@ -45,9 +63,11 @@ export const AdvancedCodeBlock: React.FC<AdvancedCodeBlockProps> = ({
     setIsExecuting(true);
     try {
       const output = await onExecute(codeBlock.code, codeBlock.language);
-      setExecutionOutput(output);
+      setExecutionOutput(output ?? '');
     } catch (error) {
-      setExecutionOutput(`Error: ${error}`);
+      const message = error instanceof Error ? error.message : String(error);
+      setExecutionOutput(`Error: ${message}`);
+      onError?.(error as Error, { messageId });
     } finally {
       setIsExecuting(false);
     }
@@ -70,8 +90,8 @@ export const AdvancedCodeBlock: React.FC<AdvancedCodeBlockProps> = ({
     return labels[lang] || lang.toUpperCase();
   };
 
-  const lineCount = codeBlock.code.split('\n').length;
-  const isLarge = lineCount > 20;
+  const lineCount = React.useMemo(() => codeBlock.code.split('\n').length, [codeBlock.code]);
+  const isLarge = React.useMemo(() => lineCount > 20, [lineCount]);
 
   return (
     <CodeBlockContainer>

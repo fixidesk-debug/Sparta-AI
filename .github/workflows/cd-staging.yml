@@ -11,6 +11,7 @@ permissions:
 jobs:
   deploy-staging:
     runs-on: ubuntu-latest
+    # Secrets are used only on steps that require them to reduce editor/schema warnings
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS credentials (optional)

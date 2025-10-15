@@ -38,6 +38,8 @@ export enum MessageType {
   USER_LEFT = 'user_left',
   USER_LIST = 'user_list',
   CURSOR_MOVE = 'cursor_move',
+  JOIN_ROOM = 'join_room',
+  LEAVE_ROOM = 'leave_room',
   
   // System
   PING = 'ping',
@@ -49,7 +51,7 @@ export enum MessageType {
 
 export interface WebSocketMessage {
   type: MessageType | string;
-  data: Record<string, any>;
+  data?: unknown;
   room?: string;
   sender_id?: string;
   timestamp?: number;
@@ -86,6 +88,7 @@ interface QueuedMessage {
  * Robust WebSocket client with auto-reconnect and message queuing
  */
 export class WebSocketClient {
+  private static readonly NORMAL_CLOSE_CODE = 1000;
   private config: Required<WebSocketConfig>;
   private ws: WebSocket | null = null;
   private status: ConnectionStatus = ConnectionStatus.DISCONNECTED;
@@ -94,6 +97,7 @@ export class WebSocketClient {
   private reconnectAttempts = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private currentReconnectInterval: number;
+  private shouldReconnect = true;
   
   // Keep-alive
   private pingTimer: NodeJS.Timeout | null = null;
@@ -196,15 +200,16 @@ export class WebSocketClient {
    */
   public disconnect(): void {
     this.log('Disconnecting...');
-    this.config.reconnect = false;
+    this.shouldReconnect = false;
     this.stopReconnect();
     this.stopPing();
     
     if (this.ws) {
       try {
-        this.ws.close(1000, 'Client disconnect');
+        this.ws.close(WebSocketClient.NORMAL_CLOSE_CODE, 'Client disconnect');
       } catch (error) {
-        this.log('Error closing WebSocket:', error);
+        this.log('Error closing WebSocket:', error instanceof Error ? error.message : String(error));
+        this.notifyError(error as Error);
       }
       this.ws = null;
     }
@@ -231,10 +236,10 @@ export class WebSocketClient {
       const messageStr = JSON.stringify(message);
       this.ws.send(messageStr);
       this.messagesSent++;
-      this.log('Sent:', message.type, message.data);
+      this.log(`Sent message: ${String(message.type)} id=${message.message_id ?? 'n/a'}`);
       return true;
     } catch (error) {
-      this.log('Error sending message:', error);
+      this.log('Error sending message:', error instanceof Error ? error.message : String(error));
       this.queueMessage(message);
       this.notifyError(error as Error);
       return false;
@@ -315,8 +320,9 @@ export class WebSocketClient {
    */
   public joinRoom(room: string): void {
     this.send({
-      type: 'join_room',
+      type: MessageType.JOIN_ROOM,
       data: { room },
+      room,
     });
   }
   
@@ -325,8 +331,9 @@ export class WebSocketClient {
    */
   public leaveRoom(room: string): void {
     this.send({
-      type: 'leave_room',
+      type: MessageType.LEAVE_ROOM,
       data: { room },
+      room,
     });
   }
   
@@ -403,10 +410,10 @@ export class WebSocketClient {
    */
   public getStats() {
     const now = Date.now();
-    const uptime = this.status === ConnectionStatus.CONNECTED
-      ? now - this.connectionTime
-      : 0;
-    
+    const uptime = this.status === ConnectionStatus.CONNECTED ? now - this.connectionTime : 0;
+
+    const latency = (this.lastPongTime && this.lastPingTime) ? this.lastPongTime - this.lastPingTime : 0;
+
     return {
       status: this.status,
       uptime,
@@ -417,7 +424,7 @@ export class WebSocketClient {
       reconnectCount: this.reconnectCount,
       lastPing: this.lastPingTime,
       lastPong: this.lastPongTime,
-      latency: this.lastPongTime - this.lastPingTime,
+      latency,
     };
   }
   
@@ -446,67 +453,116 @@ export class WebSocketClient {
   }
   
   private handleMessage(event: MessageEvent): void {
-    try {
-      const message: WebSocketMessage = JSON.parse(event.data);
-      this.messagesReceived++;
-      
-      this.log('Received:', message.type, message.data);
-      
-      // Handle pong
-      if (message.type === MessageType.PONG) {
-        this.lastPongTime = Date.now();
-        this.clearPingTimeout();
-        return;
-      }
-      
-      // Notify handlers
-      const handlers = this.messageHandlers.get(message.type);
-      if (handlers) {
-        handlers.forEach(handler => {
-          try {
-            handler(message);
-          } catch (error) {
-            this.log('Error in message handler:', error);
-          }
-        });
-      }
-      
-      // Notify wildcard handlers
-      const wildcardHandlers = this.messageHandlers.get('*');
-      if (wildcardHandlers) {
-        wildcardHandlers.forEach(handler => {
-          try {
-            handler(message);
-          } catch (error) {
-            this.log('Error in wildcard handler:', error);
-          }
-        });
-      }
-    } catch (error) {
-      this.log('Error parsing message:', error);
-      this.notifyError(error as Error);
+    // Safely parse and validate incoming message to avoid deserialization of untrusted objects
+    const parsed = this.safeParse(event.data);
+    if (!parsed) {
+      return;
     }
+
+    const message = parsed;
+    this.messagesReceived++;
+
+    this.log('Received:', message.type, message.data);
+
+    // Handle pong
+    if (message.type === MessageType.PONG) {
+      this.lastPongTime = Date.now();
+      this.clearPingTimeout();
+      return;
+    }
+
+    // Notify handlers (use for..of to avoid per-iteration closures)
+    const handlers = this.messageHandlers.get(message.type);
+    if (handlers) {
+      handlers.forEach(handler => {
+        try {
+          handler(message);
+        } catch (error) {
+          this.log('Error in message handler:', error);
+          this.notifyError(error as Error);
+        }
+      });
+    }
+
+    // Notify wildcard handlers
+    const wildcardHandlers = this.messageHandlers.get('*');
+    if (wildcardHandlers) {
+      wildcardHandlers.forEach(handler => {
+        try {
+          handler(message);
+        } catch (error) {
+          this.log('Error in wildcard handler:', error);
+          this.notifyError(error as Error);
+        }
+      });
+    }
+  }
+
+  // Safely parse incoming JSON and validate shape
+  private safeParse(data: unknown): WebSocketMessage | null {
+    if (typeof data !== 'string') {
+      this.log('Received non-string message data, ignoring');
+      return null;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data);
+    } catch (err) {
+      this.log('Invalid JSON received, ignoring');
+      this.notifyError(err as Error);
+      return null;
+    }
+
+    if (!parsed || typeof parsed !== 'object') {
+      this.log('Parsed message is not an object, ignoring');
+      return null;
+    }
+
+    const maybe = parsed as Partial<WebSocketMessage>;
+
+    // Basic structural validation
+    if (typeof maybe.type !== 'string') {
+      this.log('Message missing valid type field, ignoring');
+      return null;
+    }
+
+    if (maybe.data !== undefined && typeof maybe.data !== 'object') {
+      this.log('Message data is not an object, ignoring');
+      return null;
+    }
+
+    // Return a normalized object
+    return {
+      type: maybe.type,
+      data: (maybe.data as Record<string, any>) || {},
+      room: typeof maybe.room === 'string' ? maybe.room : undefined,
+      sender_id: typeof maybe.sender_id === 'string' ? maybe.sender_id : undefined,
+      timestamp: typeof maybe.timestamp === 'number' ? maybe.timestamp : undefined,
+      message_id: typeof maybe.message_id === 'string' ? maybe.message_id : undefined,
+    };
   }
   
   private handleError(event: Event): void {
-    this.log('WebSocket error:', event);
+    this.log('WebSocket error event:', event);
     this.setStatus(ConnectionStatus.ERROR);
-    this.notifyError(new Error('WebSocket error'));
+    const err = event instanceof Error ? event : new Error('WebSocket error event');
+    this.notifyError(err);
   }
   
   private handleClose(event: CloseEvent): void {
-    this.log('WebSocket closed:', event.code, event.reason);
+    this.log('WebSocket closed:', { code: event.code, reason: event.reason });
     this.stopPing();
     this.ws = null;
     
-    if (event.code === 1000) {
+    if (event.code === WebSocketClient.NORMAL_CLOSE_CODE) {
       // Normal closure
       this.setStatus(ConnectionStatus.DISCONNECTED);
     } else {
       this.setStatus(ConnectionStatus.ERROR);
       
       // Attempt reconnection if enabled
-      if (this.config.reconnect && this.reconnectAttempts < this.config.maxReconnectAttempts) {
+      if (this.shouldReconnect && this.reconnectAttempts < this.config.maxReconnectAttempts) {
         this.scheduleReconnect();
       }
     }
@@ -520,21 +576,17 @@ export class WebSocketClient {
     this.reconnectAttempts++;
     this.reconnectCount++;
     
-    this.log(
-      `Scheduling reconnect attempt ${this.reconnectAttempts} ` +
-      `in ${this.currentReconnectInterval}ms`
-    );
+    this.log('Scheduling reconnect attempt ' + this.reconnectAttempts + ' in ' + this.currentReconnectInterval + 'ms');
     
+    const delay = this.currentReconnectInterval;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
-    }, this.currentReconnectInterval);
-    
-    // Increase reconnect interval with exponential backoff
-    this.currentReconnectInterval = Math.min(
-      this.currentReconnectInterval * this.config.reconnectDecay,
-      this.config.maxReconnectInterval
-    );
+    }, delay);
+
+    // Increase reconnect interval with exponential backoff (clamped)
+    const next = this.currentReconnectInterval * this.config.reconnectDecay;
+    this.currentReconnectInterval = next > this.config.maxReconnectInterval ? this.config.maxReconnectInterval : next;
   }
   
   private stopReconnect(): void {
@@ -560,7 +612,12 @@ export class WebSocketClient {
         // Set timeout for pong response
         this.pingTimeoutTimer = setTimeout(() => {
           this.log('Ping timeout - no pong received');
-          this.ws?.close(1000, 'Ping timeout');
+          try {
+            this.ws?.close(WebSocketClient.NORMAL_CLOSE_CODE, 'Ping timeout');
+          } catch (err) {
+            this.log('Error closing after ping timeout:', err instanceof Error ? err.message : String(err));
+            this.notifyError(err as Error);
+          }
         }, this.config.pingTimeout);
       }
     }, this.config.pingInterval);
@@ -602,25 +659,24 @@ export class WebSocketClient {
     if (this.messageQueue.length === 0) {
       return;
     }
-    
+
     this.log(`Processing ${this.messageQueue.length} queued messages`);
-    
-    const queue = [...this.messageQueue];
-    this.messageQueue = [];
-    
-    for (const item of queue) {
+
+    // Process queue without shifting repeatedly (avoids O(n^2) behavior)
+    const remaining: QueuedMessage[] = [];
+    for (let i = 0; i < this.messageQueue.length; i++) {
+      const item = this.messageQueue[i];
       const sent = this.send(item.message);
-      
       if (!sent) {
-        // Re-queue if send failed
         item.retries++;
         if (item.retries < 3) {
-          this.messageQueue.push(item);
+          remaining.push(item);
         } else {
           this.log('Message dropped after 3 retries:', item.message.type);
         }
       }
     }
+    this.messageQueue = remaining;
   }
   
   private setStatus(status: ConnectionStatus): void {

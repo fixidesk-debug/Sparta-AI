@@ -520,18 +520,24 @@ const getUserColor = (userId: string): string => {
   return colors[index];
 };
 
-const escapeHtml = (text: string): string => {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-};
+// Note: we intentionally avoid using `dangerouslySetInnerHTML` anywhere in this
+// component. Instead we return React nodes so React will safely escape content
+// and we only wrap matched text in <mark> elements.
+const highlightText = (text: string, query: string): React.ReactNode => {
+  if (!query) return text;
 
-const highlightText = (text: string, query: string): string => {
-  if (!query) return escapeHtml(text);
-  const escapedText = escapeHtml(text);
+  // Escape regex metacharacters in the query so it is treated as a literal
   const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const regex = new RegExp(`(${escapedQuery})`, 'gi');
-  return escapedText.replace(regex, '<mark>$1</mark>');
+
+  // Split the original text on the query (case-insensitive) and insert <mark>
+  // elements for matches. Rendering strings directly is safe because React
+  // escapes text nodes automatically.
+  const parts = text.split(new RegExp(`(${escapedQuery})`, 'gi'));
+  const matchExact = new RegExp(`^${escapedQuery}$`, 'i');
+
+  return parts.map((part, i) => (
+    matchExact.test(part) ? <mark key={i}>{part}</mark> : part
+  ));
 };
 
 // ==================== MentionInput Component ====================
@@ -773,11 +779,9 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
                     {new Date(msg.timestamp).toLocaleString()}
                   </ResultTimestamp>
                 </ResultHeader>
-                <ResultContent
-                  dangerouslySetInnerHTML={{
-                    __html: highlightText(msg.content, searchQuery)
-                  }}
-                />
+                <ResultContent>
+                  {highlightText(msg.content, searchQuery)}
+                </ResultContent>
               </SearchResultItem>
             ))
           ) : searchQuery ? (

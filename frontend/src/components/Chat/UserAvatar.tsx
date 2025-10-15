@@ -3,7 +3,7 @@
  * Displays user avatar with online status indicator
  */
 
-import React from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import styled from 'styled-components';
 import { motion } from 'framer-motion';
 import { User, UserStatus } from '../../types/chat.types';
@@ -23,13 +23,22 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
   onClick,
   className,
 }) => {
-  const getInitials = (name: string): string => {
-    const parts = name.trim().split(' ');
+  // Small sanitizer to limit length and remove newlines for attributes/logs
+  const sanitizeForAttr = (value: unknown, max = 100) => {
+    const s = String(value ?? '')
+      .replace(/[\r\n]+/g, ' ')
+      .trim();
+    return s.length > max ? s.slice(0, max) : s;
+  };
+
+  const getInitials = useCallback((name: string): string => {
+    const safeName = sanitizeForAttr(name, 60) || 'U';
+    const parts = safeName.split(' ').filter(Boolean);
     if (parts.length >= 2) {
       return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
     }
-    return name.substring(0, 2).toUpperCase();
-  };
+    return safeName.substring(0, 2).toUpperCase();
+  }, []);
 
   const getStatusColor = (status: UserStatus): string => {
     switch (status) {
@@ -46,7 +55,7 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
     }
   };
 
-  const getStatusLabel = (status: UserStatus): string => {
+  const getStatusLabel = useCallback((status: UserStatus): string => {
     switch (status) {
       case 'online':
         return 'Online';
@@ -59,29 +68,50 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
       default:
         return 'Unknown';
     }
-  };
+  }, []);
+
+  const [imageError, setImageError] = useState(false);
+
+  // Guarded click to prevent external callback errors from bubbling
+  const handleClick = useCallback(() => {
+    if (!onClick) return;
+    try {
+      onClick();
+    } catch (err) {
+      // sanitize for logs
+      // eslint-disable-next-line no-console
+      console.error('UserAvatar onClick error:', String(err ?? 'unknown'));
+    }
+  }, [onClick]);
 
   return (
     <AvatarContainer
       size={size}
-      onClick={onClick}
+      onClick={handleClick}
       className={className}
       $clickable={!!onClick}
       whileHover={onClick ? { scale: 1.05 } : undefined}
       whileTap={onClick ? { scale: 0.95 } : undefined}
-      title={`${user.name} - ${getStatusLabel(user.status)}`}
+      title={`${sanitizeForAttr(user?.name || 'Unknown')} - ${getStatusLabel(
+        user?.status || 'offline'
+      )}`}
     >
-      {user.avatar ? (
-        <AvatarImage src={user.avatar} alt={user.name} loading="lazy" />
+      {user?.avatar && !imageError && typeof user.avatar === 'string' ? (
+        <AvatarImage
+          src={user.avatar}
+          alt={sanitizeForAttr(user.name || 'Avatar')}
+          loading="lazy"
+          onError={() => setImageError(true)}
+        />
       ) : (
-        <AvatarFallback $color={user.color || '#3b82f6'}>
-          {getInitials(user.name)}
+        <AvatarFallback $color={user?.color || '#3b82f6'}>
+          {getInitials(user?.name || 'U')}
         </AvatarFallback>
       )}
       
       {showStatus && (
-        <StatusRing $color={getStatusColor(user.status)}>
-          <StatusDot $color={getStatusColor(user.status)} />
+        <StatusRing $color={getStatusColor(user?.status || 'offline')}>
+          <StatusDot $color={getStatusColor(user?.status || 'offline')} />
         </StatusRing>
       )}
 

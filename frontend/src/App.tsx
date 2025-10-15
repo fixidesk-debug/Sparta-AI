@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { ThemeProvider, createTheme, CssBaseline } from '@mui/material';
 import Home from './pages/Home';
 import Login from './pages/Login';
+import AppHeader from './components/AppHeader';
 
 const theme = createTheme({
   palette: {
@@ -26,6 +27,7 @@ const App: React.FC = () => {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Router>
+        <AppHeader />
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route

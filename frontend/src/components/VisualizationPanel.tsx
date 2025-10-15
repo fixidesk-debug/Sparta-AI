@@ -4,7 +4,7 @@
  * Demonstrates how to use the visualization system with the Sparta AI chat interface
  */
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { ChartRenderer } from './ChartRenderer';
 import { ChartControls } from './ChartControls';
 import {
@@ -39,9 +39,21 @@ export const VisualizationPanel: React.FC<VisualizationPanelProps> = ({
   const [showGrid, setShowGrid] = useState(config.showGrid !== false);
   const [isExporting, setIsExporting] = useState(false);
 
-  // Analyze data for available chart types
-  const analysis = analyzeData(config.datasets);
-  const availableTypes: ChartType[] = analysis.recommendations.map(r => r.type);
+  // Sanitize strings before logging to avoid log injection (CWE-117)
+  const sanitizeForLog = (value: unknown, maxLen = 300) => {
+    try {
+      if (value == null) return '';
+      const s = String(value);
+      const cleaned = s.replace(/\s+/g, ' ').replace(/[^\x20-\x7E]/g, '');
+      return cleaned.length > maxLen ? cleaned.slice(0, maxLen) + '...' : cleaned;
+    } catch {
+      return '';
+    }
+  };
+
+  // Analyze data for available chart types (memoized to avoid re-computation on each render)
+  const analysis = useMemo(() => analyzeData(config.datasets), [config.datasets]);
+  const availableTypes: ChartType[] = useMemo(() => analysis.recommendations.map(r => r.type), [analysis.recommendations]);
 
   // Handle chart type change
   const handleTypeChange = (type: ChartType) => {
@@ -56,6 +68,7 @@ export const VisualizationPanel: React.FC<VisualizationPanelProps> = ({
     try {
       const chartElement = document.getElementById(`chart-${config.id}`);
       if (!chartElement) {
+        // eslint-disable-next-line no-console
         console.error('Chart element not found');
         return;
       }
@@ -70,12 +83,15 @@ export const VisualizationPanel: React.FC<VisualizationPanelProps> = ({
       });
 
       if (result.success) {
-        console.log(`Exported as ${result.format}:`, result.filename);
+        // eslint-disable-next-line no-console
+        console.log(`Exported as ${sanitizeForLog(result.format)}:`, sanitizeForLog(result.filename));
       } else {
-        console.error('Export failed:', result.error);
+        // eslint-disable-next-line no-console
+        console.error('Export failed:', sanitizeForLog(result.error));
       }
     } catch (error) {
-      console.error('Export error:', error);
+      // eslint-disable-next-line no-console
+      console.error('Export error:', sanitizeForLog((error as any)?.message || error));
     } finally {
       setIsExporting(false);
     }
@@ -103,21 +119,39 @@ export const VisualizationPanel: React.FC<VisualizationPanelProps> = ({
 
   // Handle chart interactions
   const handleInteraction = (event: ChartInteraction) => {
-    console.log('Chart interaction:', event.type, event);
-    
-    if (event.type === 'click' && event.points) {
-      // Show point details
-      event.points.forEach(point => {
-        console.log(`Clicked: ${point.label || 'Point'} (${point.x}, ${point.y})`);
-      });
+    try {
+      // eslint-disable-next-line no-console
+      console.log('Chart interaction:', sanitizeForLog(event.type));
+
+      if (event.type === 'click' && event.points) {
+        // Show point details (sanitize any labels)
+        event.points.forEach(point => {
+          // eslint-disable-next-line no-console
+          console.log(`Clicked: ${sanitizeForLog(point.label || 'Point')} (${point.x}, ${point.y})`);
+        });
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Interaction handler error:', sanitizeForLog((err as any)?.message || err));
     }
   };
 
   // Handle chart errors
   const handleError = (error: ChartError) => {
-    console.error('Chart error:', error.code, error.message);
+    // Sanitize and forward
+    // eslint-disable-next-line no-console
+    console.error('Chart error:', sanitizeForLog(error.code), sanitizeForLog(error.message));
     if (error.details) {
-      console.error('Details:', error.details);
+      // eslint-disable-next-line no-console
+      console.error('Details:', sanitizeForLog(JSON.stringify(error.details)));
+    }
+    // Optionally forward to parent
+    if (onConfigChange) {
+      try {
+        onConfigChange({ ...config });
+      } catch {
+        // swallow to avoid UI breakage
+      }
     }
   };
 

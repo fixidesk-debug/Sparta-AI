@@ -56,6 +56,28 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     []
   );
 
+  // Small sanitizer to avoid log injection (CWE-117) and limit log size
+  const sanitizeForLog = (value: unknown): string => {
+    try {
+      let s: string;
+      if (typeof value === 'string') s = value;
+      else if (value instanceof Error) s = value.message || String(value);
+      else {
+        try {
+          s = JSON.stringify(value);
+        } catch {
+          s = String(value);
+        }
+      }
+      s = s.replace(/[\r\n\x00-\x1F\x7F]+/g, ' ');
+      const MAX = 1000;
+      if (s.length > MAX) s = s.slice(0, MAX) + '...';
+      return s;
+    } catch {
+      return '[unserializable]';
+    }
+  };
+
   // Handle incoming WebSocket messages
   const handleWebSocketMessage = useCallback(
     (wsMessage: WebSocketMessage) => {
@@ -114,7 +136,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
           break;
 
         default:
-          console.log('Unknown WebSocket message type:', wsMessage.type);
+          console.log('Unknown WebSocket message type:', sanitizeForLog(wsMessage.type));
       }
     },
     [conversationId, aiUser]
@@ -143,7 +165,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
       handleTypingIndicator(isTyping);
     },
     onError: (error: Error) => {
-      console.error('WebSocket error:', error);
+      console.error('WebSocket error:', sanitizeForLog(error));
       setError('Connection error. Please check your network.');
       setIsAITyping(false);
     },
@@ -170,10 +192,15 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
 
       // Send via WebSocket
       if (isConnected) {
-        wsSendMessage(content, {
-          process_nlp: true,
-          // Note: id, conversationId, attachments are passed in metadata but not part of options type
-        });
+        try {
+          wsSendMessage(content, {
+            process_nlp: true,
+            // Note: id, conversationId, attachments are passed in metadata but not part of options type
+          });
+        } catch (err) {
+          console.error('Failed to send message via WebSocket:', sanitizeForLog(err));
+          setError('Failed to send message. Please try again.');
+        }
 
         // Update message status to sent
         setTimeout(() => {
@@ -206,11 +233,16 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     (code: string) => {
       // Send code execution request via WebSocket
       if (isConnected) {
-        // For code execution, we should use the executeCode method instead
-        // which properly handles the WebSocket protocol
-        // For now, send as a regular message
-        wsSendMessage(code);
-        setIsAITyping(true);
+        try {
+          // For code execution, we should use the executeCode method instead
+          // which properly handles the WebSocket protocol
+          // For now, send as a regular message
+          wsSendMessage(code);
+          setIsAITyping(true);
+        } catch (err) {
+          console.error('Failed to execute code via WebSocket:', sanitizeForLog(err));
+          setError('Failed to execute code. Please try again.');
+        }
       } else {
         setError('Cannot execute code: Not connected to server');
       }
@@ -227,7 +259,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
         // const data = await response.json();
         // setMessages(data.messages);
       } catch (err) {
-        console.error('Failed to load conversation history:', err);
+        console.error('Failed to load conversation history:', sanitizeForLog(err));
       }
     };
 

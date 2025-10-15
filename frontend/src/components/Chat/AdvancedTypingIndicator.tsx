@@ -3,7 +3,7 @@
  * Shows elegant animation when users are typing with multi-user support
  */
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import styled, { keyframes } from 'styled-components';
 import { motion, AnimatePresence } from 'framer-motion';
 import { User } from '../../types/chat.types';
@@ -22,22 +22,44 @@ export const AdvancedTypingIndicator: React.FC<AdvancedTypingIndicatorProps> = (
   showAvatars = true,
   variant = 'full',
 }) => {
-  if (typingUsers.length === 0) return null;
+  const hasTyping = typingUsers && typingUsers.length > 0;
+  if (!hasTyping) return null;
 
-  const displayedUsers = typingUsers.slice(0, maxDisplayed);
-  const remainingCount = typingUsers.length - maxDisplayed;
+  const sanitize = (s: unknown, max = 40) =>
+    String(s ?? '')
+      .replace(/[\r\n]+/g, ' ')
+      .replace(/[\x00-\x1F\x7F]/g, '')
+      .trim()
+      .slice(0, max) || 'Someone';
 
-  const getTypingText = (): string => {
-    if (typingUsers.length === 1) {
-      return `${typingUsers[0].name} is typing...`;
-    } else if (typingUsers.length === 2) {
-      return `${typingUsers[0].name} and ${typingUsers[1].name} are typing...`;
-    } else if (typingUsers.length === 3) {
-      return `${typingUsers[0].name}, ${typingUsers[1].name}, and ${typingUsers[2].name} are typing...`;
-    } else {
-      return `${typingUsers[0].name}, ${typingUsers[1].name}, and ${typingUsers.length - 2} others are typing...`;
+  const displayedUsers = useMemo(() => typingUsers.slice(0, maxDisplayed), [typingUsers, maxDisplayed]);
+  const remainingCount = useMemo(() => Math.max(0, typingUsers.length - maxDisplayed), [typingUsers.length, maxDisplayed]);
+
+  const getTypingText = useMemo(() => {
+    try {
+      const names = displayedUsers.map(u => sanitize(u?.name));
+      if (typingUsers.length === 1) return `${names[0]} is typing...`;
+      if (typingUsers.length === 2) return `${names[0]} and ${names[1]} are typing...`;
+      if (typingUsers.length === 3) return `${names[0]}, ${names[1]}, and ${names[2]} are typing...`;
+      return `${names[0]}, ${names[1]}, and ${Math.max(typingUsers.length - 2, 1)} others are typing...`;
+    } catch (err) {
+      // Avoid throwing inside render — fall back to a generic string
+      // eslint-disable-next-line no-console
+      console.error('getTypingText failed:', String(err ?? 'unknown'));
+      return 'Someone is typing...';
     }
-  };
+  }, [displayedUsers, typingUsers.length]);
+
+  const Dots = useMemo(
+    () => (
+      <DotsContainer>
+        <Dot $delay={0} />
+        <Dot $delay={0.15} />
+        <Dot $delay={0.3} />
+      </DotsContainer>
+    ),
+    []
+  );
 
   if (variant === 'compact') {
     return (
@@ -48,11 +70,7 @@ export const AdvancedTypingIndicator: React.FC<AdvancedTypingIndicatorProps> = (
           exit={{ opacity: 0, scale: 0.8 }}
           transition={{ duration: 0.2 }}
         >
-          <DotsContainer>
-            <Dot $delay={0} />
-            <Dot $delay={0.15} />
-            <Dot $delay={0.3} />
-          </DotsContainer>
+          {Dots}
         </CompactContainer>
       </AnimatePresence>
     );
@@ -68,18 +86,21 @@ export const AdvancedTypingIndicator: React.FC<AdvancedTypingIndicatorProps> = (
       >
         {showAvatars && (
           <AvatarGroup>
-            {displayedUsers.map((user, index) => (
-              <AvatarWrapper
-                key={user.id}
-                $index={index}
-                initial={{ scale: 0 }}
-                animate={{ scale: 1 }}
-                exit={{ scale: 0 }}
-                transition={{ delay: index * 0.05 }}
-              >
-                <UserAvatar user={user} size={28} showStatus={false} />
-              </AvatarWrapper>
-            ))}
+            {displayedUsers.map((user, index) => {
+              const id = sanitize(user?.id, 24) || `u-${index}`;
+              return (
+                <AvatarWrapper
+                  key={id}
+                  $index={index}
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  exit={{ scale: 0 }}
+                  transition={{ delay: index * 0.05 }}
+                >
+                  <UserAvatar user={user} size={28} showStatus={false} />
+                </AvatarWrapper>
+              );
+            })}
             {remainingCount > 0 && (
               <RemainingCount
                 initial={{ scale: 0 }}
@@ -93,12 +114,8 @@ export const AdvancedTypingIndicator: React.FC<AdvancedTypingIndicatorProps> = (
         )}
 
         <TypingContent>
-          <TypingText>{getTypingText()}</TypingText>
-          <DotsContainer>
-            <Dot $delay={0} />
-            <Dot $delay={0.15} />
-            <Dot $delay={0.3} />
-          </DotsContainer>
+          <TypingText>{getTypingText}</TypingText>
+          {Dots}
         </TypingContent>
       </TypingContainer>
     </AnimatePresence>

@@ -72,7 +72,68 @@ export const useWebSocket = ({
   const clientRef = useRef<WebSocketClient | null>(null);
   const handlersRef = useRef<(() => void)[]>([]);
 
+  // Helpers
+  const sanitizeForLog = (value: unknown, maxLen = 300): string => {
+    try {
+      if (value == null) return '';
+      const s = String(value);
+      // collapse whitespace and remove non-printable chars to avoid log injection
+      const cleaned = s.replace(/\s+/g, ' ').replace(/[^\x20-\x7E]/g, '');
+      return cleaned.length > maxLen ? cleaned.slice(0, maxLen) + '...' : cleaned;
+    } catch {
+      return '';
+    }
+  };
+
+  const safeGet = (obj: any, path: string[], fallback: any = undefined) => {
+    try {
+      return path.reduce((acc, k) => (acc && acc[k] !== undefined ? acc[k] : undefined), obj) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const MAX_CODE_LENGTH = 10000;
+  const bannedCodePatterns = /(\beval\s*\(|\bnew\s+Function\b|\brequire\s*\(|process\.|child_process|exec\s*\()/i;
+
+  const isSafeCode = (code: unknown): { ok: boolean; reason?: string } => {
+    if (typeof code !== 'string') return { ok: false, reason: 'Code must be a string' };
+    if (code.length === 0) return { ok: false, reason: 'Code is empty' };
+    if (code.length > MAX_CODE_LENGTH) return { ok: false, reason: 'Code too large' };
+    if (bannedCodePatterns.test(code)) return { ok: false, reason: 'Code contains unsafe patterns' };
+    return { ok: true };
+  };
+
+  // Register a handler and push its unsubscribe into handlersRef
+  const registerHandler = (type: MessageType | string, cb: (msg: any) => void) => {
+    if (!clientRef.current) return;
+    const unsub = clientRef.current.on(type as any, (msg: any) => {
+      try {
+        cb(msg);
+      } catch (err) {
+        const m = sanitizeForLog((err as any)?.message || err);
+        // eslint-disable-next-line no-console
+        console.error(`WebSocket handler error [${String(type)}]: ${m}`);
+        if (onError) onError(new Error(m || 'WebSocket handler error'));
+      }
+    });
+    handlersRef.current.push(unsub);
+  };
+
   // Initialize WebSocket client
+  // Keep stable refs to callbacks so we don't need to include them in useEffect deps
+  const onMessageRef = useRef(onMessage);
+  const onTypingRef = useRef(onTyping);
+  const onCodeOutputRef = useRef(onCodeOutput);
+  const onCodeCompleteRef = useRef(onCodeComplete);
+  const onFileUploadProgressRef = useRef(onFileUploadProgress);
+  const onUserJoinedRef = useRef(onUserJoined);
+  const onUserLeftRef = useRef(onUserLeft);
+  const onErrorRef = useRef(onError);
+
+  // update refs when callbacks change
+  useEffect(() => { onMessageRef.current = onMessage; onTypingRef.current = onTyping; onCodeOutputRef.current = onCodeOutput; onCodeCompleteRef.current = onCodeComplete; onFileUploadProgressRef.current = onFileUploadProgress; onUserJoinedRef.current = onUserJoined; onUserLeftRef.current = onUserLeft; onErrorRef.current = onError; }, [onMessage, onTyping, onCodeOutput, onCodeComplete, onFileUploadProgress, onUserJoined, onUserLeft, onError]);
+
   useEffect(() => {
     const config: WebSocketConfig = {
       url,
@@ -100,114 +161,116 @@ export const useWebSocket = ({
     });
     handlersRef.current.push(unsubStatus);
 
-    // Register error handler
+    // Register error handler (sanitize error before logging)
     const unsubError = client.onError((error) => {
-      console.error('WebSocket error:', error);
-      if (onError) {
-        onError(error);
-      }
+      const msg = sanitizeForLog((error as any)?.message || error);
+      // eslint-disable-next-line no-console
+      console.error('WebSocket error:', msg);
+      if (onError) onError(new Error(msg || 'WebSocket error'));
     });
     handlersRef.current.push(unsubError);
 
-    // Register message handlers
-    if (onMessage) {
-      const unsubChatMsg = client.on(MessageType.CHAT_MESSAGE, (msg) => {
-        onMessage({
+    // Register message handlers and wrap parsing with validation
+    const effectiveOnMessage = onMessageRef.current;
+    const effectiveOnTyping = onTypingRef.current;
+    const effectiveOnCodeOutput = onCodeOutputRef.current;
+    const effectiveOnCodeComplete = onCodeCompleteRef.current;
+    const effectiveOnFileUploadProgress = onFileUploadProgressRef.current;
+    const effectiveOnUserJoined = onUserJoinedRef.current;
+    const effectiveOnUserLeft = onUserLeftRef.current;
+    const effectiveOnError = onErrorRef.current;
+
+    if (effectiveOnMessage) {
+      registerHandler(MessageType.CHAT_MESSAGE, (msg) => {
+        const data = safeGet(msg, ['data'], {});
+        effectiveOnMessage({
           id: msg.message_id || `${Date.now()}`,
-          content: msg.data.message,
+          content: safeGet(data, ['message'], ''),
           role: msg.sender_id === 'ai_assistant' ? 'assistant' : 'user',
-          timestamp: new Date(msg.timestamp || Date.now()),
-          conversationId: msg.data.session_id || '',
+          timestamp: new Date(safeGet(msg, ['timestamp'], Date.now())),
+          conversationId: safeGet(data, ['session_id'], ''),
           user: {
             id: msg.sender_id || '',
-            name: msg.data.username || 'Unknown',
-            email: '', // Email not available in WebSocket messages
+            name: safeGet(data, ['username'], 'Unknown'),
+            email: '',
           },
           status: 'sent',
-          metadata: msg.data,
+          metadata: data,
         });
       });
-      handlersRef.current.push(unsubChatMsg);
 
-      const unsubChatResp = client.on(MessageType.CHAT_RESPONSE, (msg) => {
-        onMessage({
+      registerHandler(MessageType.CHAT_RESPONSE, (msg) => {
+        const data = safeGet(msg, ['data'], {});
+        effectiveOnMessage({
           id: msg.message_id || `${Date.now()}`,
-          content: msg.data.message,
+          content: safeGet(data, ['message'], ''),
           role: 'assistant',
-          timestamp: new Date(msg.timestamp || Date.now()),
-          conversationId: msg.data.session_id || '',
+          timestamp: new Date(safeGet(msg, ['timestamp'], Date.now())),
+          conversationId: safeGet(data, ['session_id'], ''),
           user: {
             id: 'ai_assistant',
             name: 'AI Assistant',
-            email: '', // System user
+            email: '',
           },
           status: 'sent',
-          metadata: msg.data,
+          metadata: data,
         });
       });
-      handlersRef.current.push(unsubChatResp);
     }
 
-    if (onTyping) {
-      const unsubTypingStart = client.on(MessageType.TYPING_START, (msg) => {
-        onTyping(msg.data.user_id, msg.data.username, true);
+    if (effectiveOnTyping) {
+      registerHandler(MessageType.TYPING_START, (msg) => {
+        const data = safeGet(msg, ['data'], {});
+        effectiveOnTyping(safeGet(data, ['user_id'], ''), safeGet(data, ['username'], ''), true);
       });
-      handlersRef.current.push(unsubTypingStart);
 
-      const unsubTypingStop = client.on(MessageType.TYPING_STOP, (msg) => {
-        onTyping(msg.data.user_id, msg.data.username, false);
+      registerHandler(MessageType.TYPING_STOP, (msg) => {
+        const data = safeGet(msg, ['data'], {});
+        effectiveOnTyping(safeGet(data, ['user_id'], ''), safeGet(data, ['username'], ''), false);
       });
-      handlersRef.current.push(unsubTypingStop);
     }
 
-    if (onCodeOutput) {
-      const unsubCodeOutput = client.on(MessageType.CODE_OUTPUT, (msg) => {
-        onCodeOutput(
-          msg.data.execution_id,
-          msg.data.output,
-          msg.data.type || 'stdout'
-        );
+    if (effectiveOnCodeOutput) {
+      registerHandler(MessageType.CODE_OUTPUT, (msg) => {
+        const data = safeGet(msg, ['data'], {});
+        effectiveOnCodeOutput(safeGet(data, ['execution_id'], ''), safeGet(data, ['output'], ''), safeGet(data, ['type'], 'stdout'));
       });
-      handlersRef.current.push(unsubCodeOutput);
     }
 
-    if (onCodeComplete) {
-      const unsubCodeComplete = client.on(MessageType.CODE_COMPLETE, (msg) => {
-        onCodeComplete(msg.data.execution_id, msg.data.result);
+    if (effectiveOnCodeComplete) {
+      registerHandler(MessageType.CODE_COMPLETE, (msg) => {
+        const data = safeGet(msg, ['data'], {});
+        effectiveOnCodeComplete(safeGet(data, ['execution_id'], ''), safeGet(data, ['result'], null));
       });
-      handlersRef.current.push(unsubCodeComplete);
     }
 
-    if (onFileUploadProgress) {
-      const unsubFileProgress = client.on(MessageType.FILE_UPLOAD_PROGRESS, (msg) => {
-        onFileUploadProgress(
-          msg.data.upload_id,
-          msg.data.progress,
-          msg.data.status
-        );
+    if (effectiveOnFileUploadProgress) {
+      registerHandler(MessageType.FILE_UPLOAD_PROGRESS, (msg) => {
+        const data = safeGet(msg, ['data'], {});
+        effectiveOnFileUploadProgress(safeGet(data, ['upload_id'], ''), Number(safeGet(data, ['progress'], 0)), safeGet(data, ['status'], ''));
       });
-      handlersRef.current.push(unsubFileProgress);
     }
 
-    if (onUserJoined) {
-      const unsubUserJoined = client.on(MessageType.USER_JOINED, (msg) => {
-        onUserJoined(msg.data.user_id, msg.data.room);
+    if (effectiveOnUserJoined) {
+      registerHandler(MessageType.USER_JOINED, (msg) => {
+        const data = safeGet(msg, ['data'], {});
+        effectiveOnUserJoined(safeGet(data, ['user_id'], ''), safeGet(data, ['room'], ''));
       });
-      handlersRef.current.push(unsubUserJoined);
     }
 
-    if (onUserLeft) {
-      const unsubUserLeft = client.on(MessageType.USER_LEFT, (msg) => {
-        onUserLeft(msg.data.user_id, msg.data.room);
+    if (effectiveOnUserLeft) {
+      registerHandler(MessageType.USER_LEFT, (msg) => {
+        const data = safeGet(msg, ['data'], {});
+        effectiveOnUserLeft(safeGet(data, ['user_id'], ''), safeGet(data, ['room'], ''));
       });
-      handlersRef.current.push(unsubUserLeft);
     }
 
-    // Register system message handler for logging
-    const unsubSystem = client.on(MessageType.SYSTEM, (msg) => {
-      console.log('System message:', msg.data.message);
+    // Register system message handler for logging (sanitize user-controlled content)
+    registerHandler(MessageType.SYSTEM, (msg) => {
+      const msgText = sanitizeForLog(safeGet(msg, ['data', 'message'], ''));
+      // eslint-disable-next-line no-console
+      console.log('System message:', msgText);
     });
-    handlersRef.current.push(unsubSystem);
 
     // Cleanup on unmount
     return () => {
@@ -221,21 +284,7 @@ export const useWebSocket = ({
         clientRef.current = null;
       }
     };
-  }, [
-    url,
-    token,
-    room,
-    autoConnect,
-    debug,
-    onMessage,
-    onTyping,
-    onCodeOutput,
-    onCodeComplete,
-    onFileUploadProgress,
-    onUserJoined,
-    onUserLeft,
-    onError,
-  ]);
+  }, [url, token, room, autoConnect, debug]);
 
   // Send message
   const sendMessage = useCallback((
@@ -259,12 +308,16 @@ export const useWebSocket = ({
     }
   }, []);
 
-  // Execute code
-  const executeCode = useCallback((
-    code: string,
-    language: string = 'python',
-    executionId?: string
-  ) => {
+  // Execute code - validate for unsafe patterns before sending
+  const executeCode = useCallback((code: string, language = 'python', executionId?: string) => {
+    const safe = isSafeCode(code);
+    if (!safe.ok) {
+      const reason = sanitizeForLog(safe.reason || 'Unsafe code');
+      // eslint-disable-next-line no-console
+      console.warn('executeCode rejected:', reason);
+      return;
+    }
+
     if (clientRef.current) {
       clientRef.current.executeCode(code, language, executionId);
     }
@@ -302,22 +355,21 @@ export const useWebSocket = ({
     }
   }, []);
 
-  // Reconnect
+  // Reconnect with short randomized backoff to avoid tight loops
   const reconnect = useCallback(() => {
     if (clientRef.current) {
       clientRef.current.disconnect();
+      const delay = Math.min(1000, 100 + Math.floor(Math.random() * 400));
       setTimeout(() => {
         if (clientRef.current) {
           clientRef.current.connect();
         }
-      }, 100);
+      }, delay);
     }
   }, []);
 
   // Get statistics
-  const getStats = useCallback(() => {
-    return clientRef.current?.getStats() || null;
-  }, []);
+  const getStats = useCallback(() => clientRef.current?.getStats() || null, []);
 
   // Clear message queue
   const clearQueue = useCallback(() => {

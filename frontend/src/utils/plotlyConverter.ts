@@ -17,23 +17,29 @@ import { getTheme, getColorScheme } from './chartThemes';
  * Convert chart configuration to Plotly format
  */
 export function convertToPlotly(config: ChartConfig): PlotlyData {
-  const theme = getTheme(config.theme || 'light');
-  const colorPalette = config.colorScheme 
-    ? getColorScheme(config.colorScheme)
-    : theme.colorPalette;
+  try {
+    const theme = getTheme(config.theme || 'light');
+    const colorPalette = config.colorScheme
+      ? getColorScheme(config.colorScheme)
+      : theme.colorPalette;
 
-  // Convert datasets to Plotly traces
-  const data = config.datasets.map((dataset, index) => 
-    convertDatasetToTrace(dataset, config.type, colorPalette[index % colorPalette.length], theme)
-  );
+    // Convert datasets to Plotly traces
+    const data = config.datasets.map((dataset, index) =>
+      convertDatasetToTrace(dataset, config.type, colorPalette[index % colorPalette.length], theme)
+    );
 
-  // Build layout
-  const layout = buildLayout(config, theme);
+    // Build layout
+    const layout = buildLayout(config, theme);
 
-  // Build config
-  const plotConfig = buildConfig(config);
+    // Build config
+    const plotConfig = buildConfig(config);
 
-  return { data, layout, config: plotConfig };
+    return { data, layout, config: plotConfig };
+  } catch (err) {
+    // Fail-safe: return empty plot but surface error via console and rethrow for upstream handling
+    console.error('Error converting to Plotly format', err);
+    throw err;
+  }
 }
 
 /**
@@ -227,80 +233,80 @@ function convertDatasetToTrace(
  * Reshape data array into 2D matrix for heatmap
  */
 function reshapeDataForHeatmap(data: Array<{ x: unknown; y: unknown; z?: number }>): number[][] {
-  if (data.length === 0) return [];
+  if (!data || data.length === 0) return [];
 
   // If z values exist, create matrix from x, y, z
   if (data[0].z !== undefined) {
     const xValues = Array.from(new Set(data.map(d => d.x)));
     const yValues = Array.from(new Set(data.map(d => d.y)));
-    
-    const matrix: number[][] = [];
-    yValues.forEach(yVal => {
-      const row: number[] = [];
-      xValues.forEach(xVal => {
-        const point = data.find(d => d.x === xVal && d.y === yVal);
-        row.push(point?.z || 0);
-      });
-      matrix.push(row);
-    });
-    
+
+    // Build quick lookup map for (x,y) -> z
+    const lookup = new Map<string, number>();
+    for (const point of data) {
+      const key = `${String(point.x)}::${String(point.y)}`;
+      lookup.set(key, point.z ?? 0);
+    }
+
+    const matrix: number[][] = new Array(yValues.length);
+    for (let i = 0; i < yValues.length; i++) {
+      const yVal = yValues[i];
+      const row: number[] = new Array(xValues.length);
+      for (let j = 0; j < xValues.length; j++) {
+        const xVal = xValues[j];
+        const key = `${String(xVal)}::${String(yVal)}`;
+        row[j] = lookup.get(key) ?? 0;
+      }
+      matrix[i] = row;
+    }
+
     return matrix;
   }
 
   // Otherwise, assume data is already in matrix format
-  // Group by y value (row)
-  const grouped: Record<string, number[]> = {};
-  data.forEach(point => {
+  // Group by y value (row) in insertion order
+  const grouped: Map<string, number[]> = new Map();
+  for (const point of data) {
     const key = String(point.y);
-    if (!grouped[key]) grouped[key] = [];
-    grouped[key].push(Number(point.x) || 0);
-  });
+    const arr = grouped.get(key) || [];
+    arr.push(Number(point.x) || 0);
+    if (!grouped.has(key)) grouped.set(key, arr);
+  }
 
-  return Object.values(grouped);
+  return Array.from(grouped.values());
 }
 
 /**
  * Build Plotly layout from configuration
  */
 function buildLayout(config: ChartConfig, theme: ChartTheme): Partial<Layout> {
+  const { fontFamily, titleFontSize, fontSize, textColor, gridColor, axisColor, backgroundColor } = theme;
+
+  const buildTitle = (text?: string) => text ? { text, font: { family: fontFamily, size: fontSize, color: textColor } } : undefined;
+
   const layout: Partial<Layout> = {
     title: config.title ? {
       text: config.title,
       font: {
-        family: theme.fontFamily,
-        size: theme.titleFontSize,
-        color: theme.textColor,
+        family: fontFamily,
+        size: titleFontSize,
+        color: textColor,
       },
     } : undefined,
 
     xaxis: {
-      title: config.xAxisLabel ? {
-        text: config.xAxisLabel,
-        font: {
-          family: theme.fontFamily,
-          size: theme.fontSize,
-          color: theme.textColor,
-        },
-      } : undefined,
+      title: buildTitle(config.xAxisLabel),
       showgrid: config.showGrid !== false,
-      gridcolor: theme.gridColor,
-      color: theme.axisColor,
+      gridcolor: gridColor,
+      color: axisColor,
       zeroline: true,
       visible: config.showAxes !== false,
     },
 
     yaxis: {
-      title: config.yAxisLabel ? {
-        text: config.yAxisLabel,
-        font: {
-          family: theme.fontFamily,
-          size: theme.fontSize,
-          color: theme.textColor,
-        },
-      } : undefined,
+      title: buildTitle(config.yAxisLabel),
       showgrid: config.showGrid !== false,
-      gridcolor: theme.gridColor,
-      color: theme.axisColor,
+      gridcolor: gridColor,
+      color: axisColor,
       zeroline: true,
       visible: config.showAxes !== false,
     },
@@ -314,13 +320,13 @@ function buildLayout(config: ChartConfig, theme: ChartTheme): Partial<Layout> {
       },
     },
 
-    plot_bgcolor: theme.backgroundColor,
-    paper_bgcolor: theme.backgroundColor,
+    plot_bgcolor: backgroundColor,
+    paper_bgcolor: backgroundColor,
 
     font: {
-      family: theme.fontFamily,
-      size: theme.fontSize,
-      color: theme.textColor,
+      family: fontFamily,
+      size: fontSize,
+      color: textColor,
     },
 
     autosize: true,

@@ -4,7 +4,7 @@
  * Full-screen modal for previewing files with actions
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { FilePreviewModalProps, FilePreviewData, PreviewType } from '../types/fileManagement';
 
 const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
@@ -19,6 +19,17 @@ const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Sanitize values for logging
+  const sanitizeForLog = useCallback((v: unknown) => {
+    try {
+      if (v === null || v === undefined) return String(v);
+      const s = typeof v === 'string' ? v : JSON.stringify(v);
+      return s.replace(/[\r\n]+/g, ' ');
+    } catch (_err) {
+      return '<<unserializable>>';
+    }
+  }, []);
+
   // Load preview data when modal opens
   useEffect(() => {
     if (open && file) {
@@ -28,7 +39,7 @@ const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   }, [open, file]);
 
   // Load preview data from server
-  const loadPreview = async () => {
+  const loadPreview = useCallback(async () => {
     setLoading(true);
     setError(null);
 
@@ -41,35 +52,42 @@ const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
       const data = await response.json();
       setPreviewData(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      console.error('loadPreview error:', sanitizeForLog(msg));
+      setError(msg);
     } finally {
       setLoading(false);
     }
-  };
+  }, [file?.id, sanitizeForLog]);
 
   // Get preview type based on file type
-  const getPreviewType = (): PreviewType => {
-    const type = file.type.toLowerCase();
-    
-    if (type.startsWith('image/')) return 'image';
-    if (type === 'application/pdf') return 'pdf';
-    if (type === 'application/json') return 'json';
-    if (type === 'text/csv' || file.extension === 'csv') return 'csv';
-    if (type.startsWith('text/')) return 'text';
-    if (type.includes('markdown') || file.extension === 'md') return 'markdown';
-    if (
-      ['js', 'ts', 'tsx', 'jsx', 'py', 'java', 'cpp', 'c', 'css', 'html'].includes(
-        file.extension
-      )
-    ) {
-      return 'code';
+  const getPreviewType = useMemo<PreviewType>(() => {
+    try {
+      const type = (file.type || '').toLowerCase();
+
+      if (type.startsWith('image/')) return 'image';
+      if (type === 'application/pdf') return 'pdf';
+      if (type === 'application/json') return 'json';
+      if (type === 'text/csv' || file.extension === 'csv') return 'csv';
+      if (type.startsWith('text/')) return 'text';
+      if (type.includes('markdown') || file.extension === 'md') return 'markdown';
+      if (
+        ['js', 'ts', 'tsx', 'jsx', 'py', 'java', 'cpp', 'c', 'css', 'html'].includes(
+          file.extension
+        )
+      ) {
+        return 'code';
+      }
+
+      return 'none';
+    } catch (err) {
+      console.error('getPreviewType error:', sanitizeForLog(err));
+      return 'none';
     }
-    
-    return 'none';
-  };
+  }, [file?.type, file?.extension, sanitizeForLog]);
 
   // Render preview content
-  const renderPreview = () => {
+  const renderPreview = useCallback(() => {
     if (loading) {
       return (
         <div className="flex items-center justify-center h-full">
@@ -88,7 +106,7 @@ const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
             <div className="text-6xl mb-4">❌</div>
             <p className="text-red-600 dark:text-red-400 mb-2">{error}</p>
             <button
-              onClick={loadPreview}
+              onClick={() => { try { loadPreview(); } catch (err) { console.error('retry loadPreview failed:', sanitizeForLog(err)); } }}
               className="text-blue-600 dark:text-blue-400 hover:underline"
             >
               Try again
@@ -98,7 +116,7 @@ const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
       );
     }
 
-    const previewType = getPreviewType();
+    const previewType = getPreviewType;
 
     switch (previewType) {
       case 'image':
@@ -202,7 +220,7 @@ const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
               </p>
               {onDownload && (
                 <button
-                  onClick={onDownload}
+                  onClick={() => { try { onDownload && onDownload(); } catch (err) { console.error('onDownload failed:', sanitizeForLog(err)); } }}
                   className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
                 >
                   Download to view
@@ -212,12 +230,11 @@ const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
           </div>
         );
     }
-
     return null;
-  };
+  }, [loading, error, previewData, file, onDownload, onShare, onDelete, loadPreview, sanitizeForLog, getPreviewType]);
 
   // Format bytes
-  const formatBytes = (bytes: number): string => {
+  const formatBytes = useCallback((bytes: number): string => {
     const units = ['B', 'KB', 'MB', 'GB'];
     let size = bytes;
     let unitIndex = 0;
@@ -228,12 +245,10 @@ const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
     }
 
     return `${size.toFixed(2)} ${units[unitIndex]}`;
-  };
+  }, []);
 
   // Format date
-  const formatDate = (date: Date): string => {
-    return new Date(date).toLocaleString();
-  };
+  const formatDate = useCallback((date: Date): string => new Date(date).toLocaleString(), []);
 
   if (!open) return null;
 
@@ -261,7 +276,7 @@ const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
           <div className="flex items-center gap-2">
             {onDownload && (
               <button
-                onClick={onDownload}
+                onClick={() => { try { onDownload(); } catch (err) { console.error('onDownload failed:', sanitizeForLog(err)); } }}
                 className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
                 title="Download"
                 aria-label="Download file"
@@ -271,7 +286,7 @@ const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
             )}
             {onShare && (
               <button
-                onClick={onShare}
+                onClick={() => { try { onShare(); } catch (err) { console.error('onShare failed:', sanitizeForLog(err)); } }}
                 className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
                 title="Share"
                 aria-label="Share file"
@@ -281,7 +296,7 @@ const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
             )}
             {onDelete && (
               <button
-                onClick={onDelete}
+                onClick={() => { try { onDelete(); } catch (err) { console.error('onDelete failed:', sanitizeForLog(err)); } }}
                 className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded text-red-600 dark:text-red-400"
                 title="Delete"
                 aria-label="Delete file"

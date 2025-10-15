@@ -50,12 +50,22 @@ export interface CodeBlock {
   executionTime?: number;
 }
 
+// Reusable date range type to avoid duplicated inline types and improve maintainability
+export interface DateRange {
+  start: Date;
+  end: Date;
+}
+
 export interface ChartData {
   id: string;
   type: 'line' | 'bar' | 'pie' | 'scatter' | 'heatmap' | 'area';
   title: string;
-  data: any;
-  config?: any;
+  // Chart data is expected to be an array of objects for most chart types.
+  // Use `any[]` here to allow flexible shapes (name/x/y/values). Consumers
+  // should narrow the shape as needed. `config` is a loose object with
+  // optional keys like xAxisKey, yAxisKeys, valueKey, nameKey, etc.
+  data: any[];
+  config?: { [key: string]: any };
   isExpanded: boolean;
 }
 
@@ -156,20 +166,14 @@ export interface ExportOptions {
   includeAttachments: boolean;
   includeCharts: boolean;
   includeMetadata: boolean;
-  dateRange?: {
-    start: Date;
-    end: Date;
-  };
+  dateRange?: DateRange;
   messageTypes?: MessageType[];
 }
 
 export interface ChatFilter {
   type?: MessageType;
   sender?: string;
-  dateRange?: {
-    start: Date;
-    end: Date;
-  };
+  dateRange?: DateRange;
   hasAttachments?: boolean;
   hasCharts?: boolean;
   isPinned?: boolean;

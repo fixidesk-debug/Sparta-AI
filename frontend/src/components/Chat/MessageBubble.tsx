@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import styled, { css } from 'styled-components';
 import { motion } from 'framer-motion';
 import { Message, User } from '../../types/chat';
@@ -61,15 +61,15 @@ const AvatarContainer = styled.div<{$isCurrentUser: boolean}>`
     margin: ${props => props.$isCurrentUser ? '0 0 0 12px' : '0 12px 0 0'};
 `;
 
-export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, currentUser }) => {
+const MessageBubbleInner: React.FC<MessageBubbleProps> = ({ message, currentUser }) => {
   const isCurrentUser = message.user.id === currentUser.id;
 
-  const renderContent = () => {
+  const content = useMemo(() => {
     if (message.codeBlocks && message.codeBlocks.length > 0) {
       return <CodeBlock block={message.codeBlocks[0]} />;
     }
     return <p>{message.content}</p>;
-  };
+  }, [message.codeBlocks, message.content]);
 
   return (
     <MessageWrapper
@@ -78,12 +78,19 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, currentUs
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3 }}
     >
-        <AvatarContainer $isCurrentUser={isCurrentUser}>
-            <Avatar src={message.user.avatar || ''} alt={message.user.name || 'User'} isOnline={true} />
-        </AvatarContainer>
-      <Bubble $isCurrentUser={isCurrentUser}>
-        {renderContent()}
-      </Bubble>
+      <AvatarContainer $isCurrentUser={isCurrentUser}>
+        <Avatar src={message.user.avatar || ''} alt={message.user.name || 'User'} isOnline={true} />
+      </AvatarContainer>
+      <Bubble $isCurrentUser={isCurrentUser}>{content}</Bubble>
     </MessageWrapper>
   );
 };
+
+export const MessageBubble = React.memo(MessageBubbleInner, (prev, next) => {
+  // Fast bail-out: same id and same content means no re-render
+  if (prev.message.id !== next.message.id) return false;
+  if (prev.message.content !== next.message.content) return false;
+  if ((prev.message.codeBlocks?.length || 0) !== (next.message.codeBlocks?.length || 0)) return false;
+  if (prev.currentUser.id !== next.currentUser.id) return false;
+  return true;
+});

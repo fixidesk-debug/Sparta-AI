@@ -14,32 +14,75 @@ import {
   ChartRecommendation,
 } from '../types/visualization';
 
+// Helper utilities
+function safeNumber(v: unknown, fallback = NaN): number {
+  const n = Number(v as any);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function ensureBucketRange(start: number, end: number, length: number) {
+  const s = Math.max(0, Math.min(length, start));
+  const e = Math.max(s, Math.min(length, end));
+  return { s, e };
+}
+
+/**
+ * Safely run a potentially unsafe operation and return a fallback on error.
+ */
+function safeRun<T>(fn: () => T, fallback: T): T {
+  try {
+    return fn();
+  } catch (err) {
+    // Keep error handling lightweight here (UI should not crash on bad input)
+    // eslint-disable-next-line no-console
+    console.error('dataProcessor: caught error', err);
+    return fallback;
+  }
+}
+
 /**
  * Calculate statistical summary for a dataset
  */
 export function calculateStatistics(data: number[]): StatisticalSummary {
-  if (data.length === 0) {
-    return { count: 0 };
+  if (!Array.isArray(data) || data.length === 0) return { count: 0 };
+
+  // Filter and coerce to numbers once
+  const nums: number[] = data.map(v => safeNumber(v)).filter(n => !Number.isNaN(n));
+  if (nums.length === 0) return { count: 0 };
+
+  // Single-pass Welford algorithm for mean and variance
+  let mean = 0;
+  let M2 = 0;
+  let count = 0;
+  let min = Infinity;
+  let max = -Infinity;
+
+  for (let i = 0; i < nums.length; i++) {
+    const x = nums[i];
+    count++;
+    const delta = x - mean;
+    mean += delta / count;
+    M2 += delta * (x - mean);
+    if (x < min) min = x;
+    if (x > max) max = x;
   }
 
-  const sorted = [...data].sort((a, b) => a - b);
-  const count = sorted.length;
-  const sum = sorted.reduce((acc, val) => acc + val, 0);
-  const mean = sum / count;
-
-  // Variance and standard deviation
-  const squaredDiffs = sorted.map(val => Math.pow(val - mean, 2));
-  const variance = squaredDiffs.reduce((acc, val) => acc + val, 0) / count;
+  const variance = M2 / count;
   const std = Math.sqrt(variance);
 
-  // Quartiles
-  const q1Index = Math.floor(count * 0.25);
-  const medianIndex = Math.floor(count * 0.5);
-  const q3Index = Math.floor(count * 0.75);
+  // Quartiles - require sorted array
+  const sorted = nums.slice().sort((a, b) => a - b);
+  const quartile = (arr: number[], p: number) => {
+    const pos = (arr.length - 1) * p;
+    const base = Math.floor(pos);
+    const rest = pos - base;
+    if (arr[base + 1] !== undefined) return arr[base] + rest * (arr[base + 1] - arr[base]);
+    return arr[base];
+  };
 
-  const q1 = sorted[q1Index];
-  const median = sorted[medianIndex];
-  const q3 = sorted[q3Index];
+  const q1 = quartile(sorted, 0.25);
+  const median = quartile(sorted, 0.5);
+  const q3 = quartile(sorted, 0.75);
 
   // IQR and outliers
   const iqr = q3 - q1;
@@ -47,16 +90,23 @@ export function calculateStatistics(data: number[]): StatisticalSummary {
   const upperBound = q3 + 1.5 * iqr;
   const outliers = sorted.filter(val => val < lowerBound || val > upperBound);
 
-  // Mode (most frequent value)
-  const frequency: Record<number, number> = {};
-  sorted.forEach(val => {
-    frequency[val] = (frequency[val] || 0) + 1;
-  });
-  const maxFrequency = Math.max(...Object.values(frequency));
-  const modes = Object.keys(frequency)
-    .filter(key => frequency[Number(key)] === maxFrequency)
-    .map(Number);
-  const mode = modes.length === sorted.length ? undefined : modes[0];
+  // Mode using Map for performance
+  const freq = new Map<number, number>();
+  for (let i = 0; i < sorted.length; i++) {
+    const v = sorted[i];
+    freq.set(v, (freq.get(v) || 0) + 1);
+  }
+  let mode: number | undefined;
+  if (freq.size > 0) {
+    let maxFreq = 0;
+    freq.forEach((v, k) => {
+      if (v > maxFreq) {
+        maxFreq = v;
+        mode = k;
+      }
+    });
+    if (maxFreq === 1 && freq.size === sorted.length) mode = undefined;
+  }
 
   return {
     mean,
@@ -64,8 +114,8 @@ export function calculateStatistics(data: number[]): StatisticalSummary {
     mode,
     std,
     variance,
-    min: sorted[0],
-    max: sorted[count - 1],
+    min,
+    max,
     q1,
     q3,
     count,
@@ -101,32 +151,36 @@ export function processData(
       groups[key].push(point);
     });
 
-    // Aggregate groups
+    // Aggregate groups (if requested) with safer numeric handling
     if (options.aggregate) {
       processed = Object.keys(groups).map(key => {
         const groupData = groups[key];
-        const yValues = groupData.map(p => Number(p.y)).filter(v => !isNaN(v));
-        let aggregatedY: number;
+        const yValues = groupData.map(p => safeNumber(p.y)).filter(v => !Number.isNaN(v));
 
-        switch (options.aggregate) {
-          case 'sum':
-            aggregatedY = yValues.reduce((sum, val) => sum + val, 0);
-            break;
-          case 'mean':
-            aggregatedY = yValues.reduce((sum, val) => sum + val, 0) / yValues.length;
-            break;
-          case 'median':
-            const sorted = [...yValues].sort((a, b) => a - b);
-            aggregatedY = sorted[Math.floor(sorted.length / 2)];
-            break;
-          case 'min':
-            aggregatedY = Math.min(...yValues);
-            break;
-          case 'max':
-            aggregatedY = Math.max(...yValues);
-            break;
-          default:
-            aggregatedY = yValues[0];
+        let aggregatedY: number | undefined = undefined;
+        if (yValues.length === 0) {
+          aggregatedY = undefined;
+        } else {
+          switch (options.aggregate) {
+            case 'sum':
+              aggregatedY = yValues.reduce((sum, val) => sum + val, 0);
+              break;
+            case 'mean':
+              aggregatedY = yValues.reduce((sum, val) => sum + val, 0) / yValues.length;
+              break;
+            case 'median':
+              const sortedY = [...yValues].sort((a, b) => a - b);
+              aggregatedY = sortedY[Math.floor(sortedY.length / 2)];
+              break;
+            case 'min':
+              aggregatedY = Math.min(...yValues);
+              break;
+            case 'max':
+              aggregatedY = Math.max(...yValues);
+              break;
+            default:
+              aggregatedY = yValues[0];
+          }
         }
 
         return {
@@ -134,7 +188,7 @@ export function processData(
           y: aggregatedY,
           label: key,
           metadata: { group: key, count: groupData.length },
-        };
+        } as unknown as DataPoint;
       });
       transformations.push(`grouped by ${options.groupBy}`, `aggregated by ${options.aggregate}`);
     }
@@ -143,8 +197,8 @@ export function processData(
   // Sort data
   if (options.sortBy) {
     processed.sort((a, b) => {
-      const aVal = options.sortBy === 'x' ? a.x : a.y;
-      const bVal = options.sortBy === 'x' ? b.x : b.y;
+      const aVal = options.sortBy === 'x' ? safeNumber(a.x) : safeNumber(a.y);
+      const bVal = options.sortBy === 'x' ? safeNumber(b.x) : safeNumber(b.y);
       const comparison = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
       return options.sortOrder === 'desc' ? -comparison : comparison;
     });
@@ -153,17 +207,19 @@ export function processData(
 
   // Normalize data
   if (options.normalize) {
-    const yValues = processed.map(p => Number(p.y)).filter(v => !isNaN(v));
-    const min = Math.min(...yValues);
-    const max = Math.max(...yValues);
-    const range = max - min;
+    const yValues = processed.map(p => safeNumber(p.y)).filter(v => !Number.isNaN(v));
+    if (yValues.length > 0) {
+      const min = Math.min(...yValues);
+      const max = Math.max(...yValues);
+      const range = max - min;
 
-    if (range > 0) {
-      processed = processed.map(point => ({
-        ...point,
-        y: ((Number(point.y) - min) / range),
-      }));
-      transformations.push('normalized');
+      if (range > 0) {
+        processed = processed.map(point => ({
+          ...point,
+          y: Number.isNaN(safeNumber(point.y)) ? point.y : ((safeNumber(point.y) - min) / range),
+        }));
+        transformations.push('normalized');
+      }
     }
   }
 
@@ -232,32 +288,38 @@ function downsampleLTTB(data: DataPoint[], targetSize: number): DataPoint[] {
 
   let a = 0;
   for (let i = 0; i < targetSize - 2; i++) {
-    const avgRangeStart = Math.floor((i + 1) * bucketSize) + 1;
-    const avgRangeEnd = Math.floor((i + 2) * bucketSize) + 1;
-    const avgRangeLength = avgRangeEnd - avgRangeStart;
+    const { s: avgRangeStart, e: avgRangeEnd } = ensureBucketRange(
+      Math.floor((i + 1) * bucketSize) + 1,
+      Math.floor((i + 2) * bucketSize) + 1,
+      data.length
+    );
+    const avgRangeLength = Math.max(1, avgRangeEnd - avgRangeStart);
 
-    // Calculate average point in next bucket
+    // Calculate average point in next bucket (use local vars to avoid repeated conversions)
     let avgX = 0;
     let avgY = 0;
     for (let j = avgRangeStart; j < avgRangeEnd; j++) {
-      avgX += Number(data[j].x);
-      avgY += Number(data[j].y);
+      avgX += safeNumber(data[j].x, 0);
+      avgY += safeNumber(data[j].y, 0);
     }
     avgX /= avgRangeLength;
     avgY /= avgRangeLength;
 
     // Find point in current bucket with largest triangle area
-    const rangeStart = Math.floor(i * bucketSize) + 1;
-    const rangeEnd = Math.floor((i + 1) * bucketSize) + 1;
+    const { s: rangeStart, e: rangeEnd } = ensureBucketRange(
+      Math.floor(i * bucketSize) + 1,
+      Math.floor((i + 1) * bucketSize) + 1,
+      data.length
+    );
     let maxArea = -1;
     let maxAreaIndex = rangeStart;
 
-    const pointAX = Number(data[a].x);
-    const pointAY = Number(data[a].y);
+    const pointAX = safeNumber(data[a].x, 0);
+    const pointAY = safeNumber(data[a].y, 0);
 
     for (let j = rangeStart; j < rangeEnd; j++) {
-      const pointBX = Number(data[j].x);
-      const pointBY = Number(data[j].y);
+  const pointBX = safeNumber(data[j].x, 0);
+  const pointBY = safeNumber(data[j].y, 0);
       
       // Calculate triangle area
       const area = Math.abs(
@@ -285,14 +347,23 @@ function downsampleLTTB(data: DataPoint[], targetSize: number): DataPoint[] {
  * Random downsampling
  */
 function downsampleRandom(data: DataPoint[], targetSize: number): DataPoint[] {
-  const sampled: DataPoint[] = [data[0]]; // Always include first
+  // Defensive guards
+  if (!Array.isArray(data) || data.length === 0 || !Number.isFinite(targetSize) || targetSize <= 0) return [];
+  if (data.length <= targetSize) return data.slice();
+
+  const sampled: DataPoint[] = [];
+  sampled.push(data[0]); // Always include first
   const step = data.length / targetSize;
-  
+
   for (let i = 1; i < targetSize - 1; i++) {
-    const index = Math.floor(i * step + Math.random() * step);
-    sampled.push(data[Math.min(index, data.length - 1)]);
+    // compute a randomized index within the bucket [i*step, (i+1)*step)
+    const base = Math.floor(i * step);
+    const span = Math.max(1, Math.floor(step));
+    const randOffset = Math.floor(Math.random() * span);
+    const index = Math.min(data.length - 1, base + randOffset);
+    sampled.push(data[index]);
   }
-  
+
   sampled.push(data[data.length - 1]); // Always include last
   return sampled;
 }
@@ -302,21 +373,24 @@ function downsampleRandom(data: DataPoint[], targetSize: number): DataPoint[] {
  */
 function downsampleMinMax(data: DataPoint[], targetSize: number): DataPoint[] {
   const sampled: DataPoint[] = [data[0]];
-  const bucketSize = Math.floor(data.length / targetSize);
+  const bucketSize = Math.max(1, Math.floor(data.length / targetSize));
   
   for (let i = 1; i < targetSize - 1; i++) {
     const start = i * bucketSize;
     const end = Math.min(start + bucketSize, data.length);
     const bucket = data.slice(start, end);
+    if (bucket.length === 0) continue;
     
-    // Find min and max in bucket
+    // Find min and max in bucket (use safeNumber once per item)
     let min = bucket[0];
     let max = bucket[0];
-    
-    bucket.forEach(point => {
-      if (Number(point.y) < Number(min.y)) min = point;
-      if (Number(point.y) > Number(max.y)) max = point;
-    });
+    for (let k = 0; k < bucket.length; k++) {
+      const point = bucket[k];
+      const val = safeNumber(point.y, NaN);
+      if (Number.isNaN(val)) continue;
+      if (val < safeNumber(min.y, val)) min = point;
+      if (val > safeNumber(max.y, val)) max = point;
+    }
     
     // Add both min and max to preserve extremes
     if (Number(min.x) < Number(max.x)) {
@@ -335,16 +409,30 @@ function downsampleMinMax(data: DataPoint[], targetSize: number): DataPoint[] {
  */
 function downsampleAverage(data: DataPoint[], targetSize: number): DataPoint[] {
   const sampled: DataPoint[] = [data[0]];
-  const bucketSize = Math.floor(data.length / targetSize);
+  const bucketSize = Math.max(1, Math.floor(data.length / targetSize));
   
   for (let i = 1; i < targetSize - 1; i++) {
     const start = i * bucketSize;
     const end = Math.min(start + bucketSize, data.length);
     const bucket = data.slice(start, end);
+    if (bucket.length === 0) continue;
     
-    // Calculate average
-    const avgX = bucket.reduce((sum, p) => sum + Number(p.x), 0) / bucket.length;
-    const avgY = bucket.reduce((sum, p) => sum + Number(p.y), 0) / bucket.length;
+    // Calculate average using safeNumber and local accumulators
+    let sumX = 0;
+    let sumY = 0;
+    let count = 0;
+    for (let k = 0; k < bucket.length; k++) {
+      const p = bucket[k];
+      const nx = safeNumber(p.x, NaN);
+      const ny = safeNumber(p.y, NaN);
+      if (Number.isNaN(nx) || Number.isNaN(ny)) continue;
+      sumX += nx;
+      sumY += ny;
+      count++;
+    }
+    if (count === 0) continue;
+    const avgX = sumX / count;
+    const avgY = sumY / count;
     
     sampled.push({
       x: avgX,
@@ -361,7 +449,7 @@ function downsampleAverage(data: DataPoint[], targetSize: number): DataPoint[] {
  * Analyze data and recommend chart types
  */
 export function analyzeData(datasets: Dataset[]): DataAnalysis {
-  if (datasets.length === 0 || datasets[0].data.length === 0) {
+  if (!Array.isArray(datasets) || datasets.length === 0) {
     return {
       dataType: 'mixed',
       dimensions: 0,
@@ -372,14 +460,27 @@ export function analyzeData(datasets: Dataset[]): DataAnalysis {
     };
   }
 
-  const allData = datasets.flatMap(d => d.data);
-  const firstPoint = allData[0];
+  // Avoid creating large flattened arrays when possible; sample first non-empty dataset
+  let firstPoint: DataPoint | undefined = undefined;
+  for (let i = 0; i < datasets.length && !firstPoint; i++) {
+    if (datasets[i].data && datasets[i].data.length > 0) firstPoint = datasets[i].data[0];
+  }
+  if (!firstPoint) {
+    return {
+      dataType: 'mixed',
+      dimensions: 0,
+      pointCount: 0,
+      hasNulls: false,
+      hasOutliers: false,
+      recommendations: [],
+    };
+  }
 
-  // Determine data type
+  // Determine data type from a sample
   const hasNumericX = typeof firstPoint.x === 'number';
   const hasNumericY = typeof firstPoint.y === 'number';
   const hasZ = firstPoint.z !== undefined;
-  const hasDate = firstPoint.x instanceof Date;
+  const hasDate = firstPoint.x instanceof Date || (typeof firstPoint.x === 'string' && !Number.isNaN(Date.parse(firstPoint.x)));
 
   let dataType: 'numerical' | 'categorical' | 'temporal' | 'mixed';
   if (hasDate) {
@@ -393,28 +494,36 @@ export function analyzeData(datasets: Dataset[]): DataAnalysis {
   }
 
   const dimensions = hasZ ? 3 : 2;
-  const pointCount = allData.length;
-
-  // Check for nulls
-  const hasNulls = allData.some(p => p.x == null || p.y == null);
+  // Count points and detect nulls with a single pass over datasets to avoid extra allocations
+  let pointCount = 0;
+  let hasNulls = false;
+  const yValuesForStats: number[] = [];
+  for (let di = 0; di < datasets.length; di++) {
+    const d = datasets[di];
+    for (let pi = 0; pi < d.data.length; pi++) {
+      const p = d.data[pi];
+      pointCount++;
+      if (p.x == null || p.y == null) hasNulls = true;
+      if (typeof p.y === 'number') yValuesForStats.push(p.y);
+      else {
+        const n = safeNumber(p.y);
+        if (!Number.isNaN(n)) yValuesForStats.push(n);
+      }
+    }
+  }
 
   // Check for outliers (numerical data only)
   let hasOutliers = false;
   let distribution: 'normal' | 'uniform' | 'skewed' | 'bimodal' | undefined;
   
-  if (hasNumericY) {
-    const yValues = allData.map(p => Number(p.y)).filter(v => !isNaN(v));
-    const stats = calculateStatistics(yValues);
+  if (hasNumericY && yValuesForStats.length > 0) {
+    const stats = safeRun(() => calculateStatistics(yValuesForStats), { count: 0 });
     hasOutliers = (stats.outliers?.length || 0) > 0;
     
-    // Simple distribution detection based on skewness
-    if (stats.mean !== undefined && stats.median !== undefined && stats.std !== undefined) {
+    // Simple distribution detection based on skewness (guard against zero std)
+    if (stats.mean !== undefined && stats.median !== undefined && stats.std !== undefined && stats.std > 0) {
       const skewness = (stats.mean - stats.median) / stats.std;
-      if (Math.abs(skewness) < 0.5) {
-        distribution = 'normal';
-      } else {
-        distribution = 'skewed';
-      }
+      distribution = Math.abs(skewness) < 0.5 ? 'normal' : 'skewed';
     }
   }
 
@@ -550,18 +659,16 @@ function generateRecommendations(context: {
  * Detect data type from sample
  */
 export function detectDataType(value: unknown): 'number' | 'string' | 'date' | 'boolean' | 'unknown' {
-  try {
-    if (value == null) return 'unknown';
-    if (typeof value === 'number') return 'number';
-    if (typeof value === 'boolean') return 'boolean';
-    if (value instanceof Date) return 'date';
-    if (typeof value === 'string') {
-      const parsed = Date.parse(value);
-      if (!isNaN(parsed)) return 'date';
-      return 'string';
-    }
-    return 'unknown';
-  } catch {
-    return 'unknown';
+  if (value == null) return 'unknown';
+  if (typeof value === 'number') return 'number';
+  if (typeof value === 'boolean') return 'boolean';
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return 'date';
+  if (typeof value === 'string') {
+    // Lightweight date detection: avoid heavy parsing for very long strings
+    const s = value.trim();
+    if (s.length === 0 || s.length > 100) return 'string';
+    const parsed = Date.parse(s);
+    return Number.isFinite(parsed) && !Number.isNaN(parsed) ? 'date' : 'string';
   }
+  return 'unknown';
 }

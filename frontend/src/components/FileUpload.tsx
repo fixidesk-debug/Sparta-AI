@@ -4,7 +4,7 @@
  * Enhanced version for Sparta AI chat interface
  */
 
-import React, { useCallback, useState, useRef } from 'react';
+import React, { useCallback, useState, useRef, useMemo } from 'react';
 import { Attachment } from '../types/chat';
 
 interface FileUploadProps {
@@ -32,6 +32,17 @@ export const FileUpload: React.FC<FileUploadProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
 
+  // Helper: sanitize strings before logging (mitigate log injection CWE-117)
+  const sanitizeForLog = useCallback((v: unknown) => {
+    try {
+      if (v === null || v === undefined) return String(v);
+      const s = typeof v === 'string' ? v : JSON.stringify(v);
+      return s.replace(/[\r\n]+/g, ' ');
+    } catch (err) {
+      return '<<unserializable>>';
+    }
+  }, []);
+
   const validateFile = useCallback((file: File): string | null => {
     const fileSizeMB = file.size / (1024 * 1024);
     if (fileSizeMB > maxFileSize) {
@@ -45,49 +56,65 @@ export const FileUpload: React.FC<FileUploadProps> = ({
 
     return null;
   }, [maxFileSize, acceptedFormats]);
-
+  // Note: do not capture `files` directly in the dependency list to avoid
+  // unnecessary re-creations; use functional state updates instead.
   const handleFiles = useCallback(
     (fileList: FileList) => {
-      const newErrors: string[] = [];
-      const validFiles: File[] = [];
+      try {
+        const newErrors: string[] = [];
+        const validFiles: File[] = [];
 
-      if (files.length + fileList.length > maxFiles) {
-        newErrors.push(`Maximum ${maxFiles} files allowed`);
-        setErrors(newErrors);
-        return;
-      }
+        // Check max files against current state immutably
+        // (use files.length from state at call time)
+        // We'll compute current length inside a functional update below.
+        Array.from(fileList).forEach((file) => {
+          const error = validateFile(file);
+          if (error) {
+            newErrors.push(error);
+          } else {
+            validFiles.push(file);
+          }
+        });
 
-      Array.from(fileList).forEach((file) => {
-        const error = validateFile(file);
-        if (error) {
-          newErrors.push(error);
+        if (newErrors.length > 0) {
+          setErrors(newErrors);
         } else {
-          validFiles.push(file);
+          setErrors([]);
         }
-      });
 
-      if (newErrors.length > 0) {
-        setErrors(newErrors);
-      } else {
-        setErrors([]);
-      }
+        if (validFiles.length > 0) {
+          const newAttachments: Attachment[] = validFiles.map((file) => ({
+            id: `${Date.now()}-${file.name}`,
+            filename: file.name,
+            name: file.name,
+            size: file.size,
+            type: file.type || 'application/octet-stream',
+            uploadProgress: 0,
+            uploadStatus: 'pending' as const,
+          }));
 
-      if (validFiles.length > 0) {
-        const newAttachments: Attachment[] = validFiles.map((file) => ({
-          id: `${Date.now()}-${file.name}`,
-          filename: file.name,
-          name: file.name,
-          size: file.size,
-          type: file.type || 'application/octet-stream',
-          uploadProgress: 0,
-          uploadStatus: 'pending' as const,
-        }));
+          setFiles((prev) => {
+            if (prev.length + newAttachments.length > maxFiles) {
+              // Preserve previous and add an error instead of silently failing
+              setErrors([`Maximum ${maxFiles} files allowed`]);
+              return prev;
+            }
+            return [...prev, ...newAttachments];
+          });
 
-        setFiles((prev) => [...prev, ...newAttachments]);
-        onFileSelect(validFiles);
+          // Guard external callback
+          try {
+            onFileSelect(validFiles);
+          } catch (cbErr) {
+            console.error('onFileSelect callback failed:', sanitizeForLog(cbErr));
+          }
+        }
+      } catch (err) {
+        console.error('handleFiles error:', sanitizeForLog(err));
+        setErrors(['An unexpected error occurred while processing files.']);
       }
     },
-    [files.length, maxFiles, onFileSelect, validateFile]
+    [maxFiles, onFileSelect, validateFile, sanitizeForLog]
   );
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
@@ -122,18 +149,28 @@ export const FileUpload: React.FC<FileUploadProps> = ({
 
       if (disabled) return;
 
-      const { files } = e.dataTransfer;
-      if (files && files.length > 0) {
-        handleFiles(files);
+      try {
+        const { files } = e.dataTransfer;
+        if (files && files.length > 0) {
+          handleFiles(files);
+        }
+      } catch (err) {
+        console.error('handleDrop error:', sanitizeForLog(err));
+        setErrors(['Failed to process dropped files.']);
       }
     },
-    [disabled, handleFiles]
+    [disabled, handleFiles, sanitizeForLog]
   );
 
   const handleFileInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      if (e.target.files && e.target.files.length > 0) {
-        handleFiles(e.target.files);
+      try {
+        if (e.target.files && e.target.files.length > 0) {
+          handleFiles(e.target.files);
+        }
+      } catch (err) {
+        console.error('file input change error:', sanitizeForLog(err));
+        setErrors(['Failed to read selected files.']);
       }
     },
     [handleFiles]
@@ -149,11 +186,14 @@ export const FileUpload: React.FC<FileUploadProps> = ({
     }
   };
 
-  const formatFileSize = (bytes: number): string => {
+  // Move out of render-heavy contexts; stable helper
+  const formatFileSize = useCallback((bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  };
+  }, []);
+
+  const acceptString = useMemo(() => acceptedFormats.join(','), [acceptedFormats]);
 
   return (
     <div className={`file-upload ${className}`}>

@@ -4,7 +4,7 @@
  * Displays files in grid or list view with selection and actions
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { FileListProps, FileItem, FileAction } from '../types/fileManagement';
 
 const FileList: React.FC<FileListProps> = ({
@@ -20,9 +20,10 @@ const FileList: React.FC<FileListProps> = ({
   className = '',
 }) => {
   const [selectMode, setSelectMode] = useState(false);
-  const [localSelectedIds, setLocalSelectedIds] = useState<string[]>(
-    selectedFileIds
-  );
+  const [localSelectedIds, setLocalSelectedIds] = useState<string[]>(selectedFileIds);
+
+  // Keep a Set for faster lookup on render-heavy lists
+  const selectedIdSet = useMemo(() => new Set(localSelectedIds), [localSelectedIds]);
 
   // Toggle select mode
   const toggleSelectMode = useCallback(() => {
@@ -35,11 +36,7 @@ const FileList: React.FC<FileListProps> = ({
   // Toggle file selection
   const toggleFileSelection = useCallback(
     (fileId: string) => {
-      setLocalSelectedIds(prev =>
-        prev.includes(fileId)
-          ? prev.filter(id => id !== fileId)
-          : [...prev, fileId]
-      );
+      setLocalSelectedIds(prev => (prev.includes(fileId) ? prev.filter(id => id !== fileId) : [...prev, fileId]));
     },
     []
   );
@@ -60,7 +57,11 @@ const FileList: React.FC<FileListProps> = ({
       if (selectMode) {
         toggleFileSelection(file.id);
       } else if (onFileSelect) {
-        onFileSelect(file);
+        try {
+          onFileSelect(file);
+        } catch (err) {
+          console.error('onFileSelect failed:', String(err));
+        }
       }
     },
     [selectMode, toggleFileSelection, onFileSelect]
@@ -71,14 +72,18 @@ const FileList: React.FC<FileListProps> = ({
     (e: React.MouseEvent, action: FileAction, file: FileItem) => {
       e.stopPropagation();
       if (onFileAction) {
-        onFileAction(action, file);
+        try {
+          onFileAction(action, file);
+        } catch (err) {
+          console.error('onFileAction failed:', String(err));
+        }
       }
     },
     [onFileAction]
   );
 
   // Format bytes
-  const formatBytes = (bytes: number): string => {
+  const formatBytes = useCallback((bytes: number): string => {
     const units = ['B', 'KB', 'MB', 'GB'];
     let size = bytes;
     let unitIndex = 0;
@@ -89,10 +94,10 @@ const FileList: React.FC<FileListProps> = ({
     }
 
     return `${size.toFixed(2)} ${units[unitIndex]}`;
-  };
+  }, []);
 
   // Format date
-  const formatDate = (date: Date): string => {
+  const formatDate = useCallback((date: Date): string => {
     const now = new Date();
     const diff = now.getTime() - new Date(date).getTime();
     const seconds = Math.floor(diff / 1000);
@@ -111,11 +116,11 @@ const FileList: React.FC<FileListProps> = ({
     } else {
       return 'Just now';
     }
-  };
+  }, []);
 
   // Get file icon
-  const getFileIcon = (file: FileItem): string => {
-    const type = file.type.toLowerCase();
+  const getFileIcon = useCallback((file: FileItem): string => {
+    const type = (file.type || '').toLowerCase();
     if (type.startsWith('image/')) return '🖼️';
     if (type.startsWith('video/')) return '🎥';
     if (type.startsWith('audio/')) return '🎵';
@@ -124,13 +129,13 @@ const FileList: React.FC<FileListProps> = ({
     if (type.includes('json')) return '📋';
     if (type.includes('zip') || type.includes('compressed')) return '📦';
     return '📄';
-  };
+  }, []);
 
   // Render grid view
   const renderGridView = () => (
     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
       {files.map(file => {
-        const isSelected = localSelectedIds.includes(file.id);
+        const isSelected = selectedIdSet.has(file.id);
 
         return (
           <div
@@ -217,7 +222,7 @@ const FileList: React.FC<FileListProps> = ({
   const renderListView = () => (
     <div className="space-y-2">
       {files.map(file => {
-        const isSelected = localSelectedIds.includes(file.id);
+        const isSelected = selectedIdSet.has(file.id);
 
         return (
           <div

@@ -22,7 +22,7 @@ export async function exportChart(
   options: ExportOptions
 ): Promise<ExportResult> {
   try {
-    const filename = options.filename || `${config.id}_${Date.now()}`;
+    const filename = options.filename || generateFilename(config.id);
 
     switch (options.format) {
       case 'png':
@@ -44,13 +44,20 @@ export async function exportChart(
         throw new Error(`Unsupported export format: ${options.format}`);
     }
   } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.error('Export chart failed:', errMsg, { configId: config.id, format: options.format });
     return {
       success: false,
       format: options.format,
       filename: '',
-      error: error instanceof Error ? error.message : 'Unknown error occurred',
+      error: errMsg,
     };
   }
+}
+
+function generateFilename(baseId?: string) {
+  const ts = Date.now();
+  return `${baseId ?? 'chart'}_${ts}`;
 }
 
 /**
@@ -71,8 +78,19 @@ async function exportToPNG(
     height,
     scale,
   });
-
-  const blob = await dataURLtoBlob(dataUrl);
+  let blob: Blob;
+  try {
+    const dataUrlSafe = validateDataUrl(dataUrl);
+    blob = await dataURLtoBlob(dataUrlSafe);
+  } catch (err) {
+    console.error('Failed to generate PNG image for export:', err);
+    return {
+      success: false,
+      format: 'png',
+      filename: '',
+      error: err instanceof Error ? err.message : 'Image generation failed',
+    };
+  }
   downloadBlob(blob, `${filename}.png`);
 
   return {
@@ -101,8 +119,19 @@ async function exportToSVG(
     width,
     height,
   });
-
-  const blob = await dataURLtoBlob(dataUrl);
+  let blob: Blob;
+  try {
+    const dataUrlSafe = validateDataUrl(dataUrl);
+    blob = await dataURLtoBlob(dataUrlSafe);
+  } catch (err) {
+    console.error('Failed to generate SVG image for export:', err);
+    return {
+      success: false,
+      format: 'svg',
+      filename: '',
+      error: err instanceof Error ? err.message : 'Image generation failed',
+    };
+  }
   downloadBlob(blob, `${filename}.svg`);
 
   return {
@@ -137,8 +166,19 @@ async function exportToPDF(
     height,
     scale,
   });
-
-  const blob = await dataURLtoBlob(dataUrl);
+  let blob: Blob;
+  try {
+    const dataUrlSafe = validateDataUrl(dataUrl);
+    blob = await dataURLtoBlob(dataUrlSafe);
+  } catch (err) {
+    console.error('Failed to generate PNG image for PDF export:', err);
+    return {
+      success: false,
+      format: 'pdf',
+      filename: '',
+      error: err instanceof Error ? err.message : 'Image generation failed',
+    };
+  }
   downloadBlob(blob, `${filename}.png`);
 
   return {
@@ -235,21 +275,47 @@ async function exportToCSV(
  * Convert data URL to Blob
  */
 function dataURLtoBlob(dataUrl: string): Promise<Blob> {
-  return fetch(dataUrl).then(res => res.blob());
+  return (async () => {
+    // Basic validation: only allow data: URLs here
+    if (!dataUrl.startsWith('data:')) {
+      throw new Error('Invalid data URL scheme');
+    }
+    const res = await fetch(dataUrl);
+    if (!res.ok) throw new Error('Failed to fetch data URL');
+    return res.blob();
+  })();
+}
+
+/**
+ * Validate data URL to ensure no external fetches (prevent SSRF-like misuse)
+ * Accepts only data: scheme and returns the same string when valid.
+ */
+function validateDataUrl(url: string): string {
+  if (typeof url !== 'string') throw new Error('Invalid data URL');
+  const trimmed = url.trim();
+  if (!trimmed.startsWith('data:')) {
+    throw new Error('Only data: URLs are allowed for image export');
+  }
+  return trimmed;
 }
 
 /**
  * Download blob as file
  */
 function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+  try {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('Failed to download blob:', err);
+    throw err;
+  }
 }
 
 /**
@@ -277,7 +343,7 @@ export async function copyChartToClipboard(
     });
 
     const blob = await dataURLtoBlob(dataUrl);
-    
+
     if (navigator.clipboard && (window as unknown as { ClipboardItem?: unknown }).ClipboardItem) {
       const ClipboardItemConstructor = (window as unknown as { ClipboardItem: new (data: Record<string, Blob>) => ClipboardItem }).ClipboardItem;
       await navigator.clipboard.write([
@@ -287,10 +353,9 @@ export async function copyChartToClipboard(
       ]);
       return true;
     }
-
     return false;
   } catch (error) {
-    console.error('Failed to copy chart to clipboard:', error);
+    console.error('Failed to copy chart to clipboard:', error instanceof Error ? error.message : String(error));
     return false;
   }
 }
@@ -306,8 +371,8 @@ export function printChart(element: HTMLElement): void {
   if (!svgElement) return;
 
   const svgString = new XMLSerializer().serializeToString(svgElement);
-
-  printWindow.document.write(`
+  try {
+    printWindow.document.write(`
     <!DOCTYPE html>
     <html>
       <head>
@@ -346,4 +411,8 @@ export function printChart(element: HTMLElement): void {
   `);
 
   printWindow.document.close();
+  } catch (err) {
+    console.error('Failed to render print window:', err instanceof Error ? err.message : String(err));
+    try { printWindow.close(); } catch (_) {}
+  }
 }

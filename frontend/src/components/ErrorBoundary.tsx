@@ -18,6 +18,62 @@ interface State {
 }
 
 export class ErrorBoundary extends Component<Props, State> {
+  // Small sanitizer for console logs to mitigate log injection (CWE-117).
+  // Removes CR/LF and other control characters and truncates very long values.
+  private static sanitizeForLog(value: unknown): string {
+    try {
+      let s: string;
+      if (typeof value === 'string') {
+        s = value;
+      } else if (value instanceof Error) {
+        // prefer message for errors to avoid huge stacks in logs
+        s = value.message || String(value);
+      } else {
+        try {
+          s = JSON.stringify(value);
+        } catch {
+          s = String(value);
+        }
+      }
+
+      // strip CR/LF and other non-printable control characters
+      s = s.replace(/[\r\n\x00-\x1F\x7F]+/g, ' ');
+
+      // truncate to avoid extremely long log entries
+      const MAX = 1000;
+      if (s.length > MAX) s = s.slice(0, MAX) + '...';
+      return s;
+    } catch (e) {
+      // Fallback to a safe string
+      return '[unserializable]';
+    }
+  }
+
+  // Sanitizer suitable for developer-facing display where newlines are useful.
+  // This preserves newline characters but removes other control characters.
+  private static sanitizeForDisplay(value: unknown): string {
+    try {
+      let s = '';
+      if (typeof value === 'string') s = value;
+      else if (value instanceof Error) s = (value.stack || value.message || String(value));
+      else {
+        try {
+          s = JSON.stringify(value, null, 2);
+        } catch {
+          s = String(value);
+        }
+      }
+
+      // remove control characters except LF (\n) and TAB (\t)
+      s = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]+/g, '');
+
+      const MAX_DISPLAY = 20000;
+      if (s.length > MAX_DISPLAY) s = s.slice(0, MAX_DISPLAY) + '\n...[truncated]';
+      return s;
+    } catch (e) {
+      return '[unserializable]';
+    }
+  }
   constructor(props: Props) {
     super(props);
     this.state = {
@@ -36,7 +92,15 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('ErrorBoundary caught error:', error, errorInfo);
+    // Sanitize any user-controllable content before logging to mitigate log injection
+    try {
+      const errMsg = ErrorBoundary.sanitizeForLog(error);
+      const infoMsg = ErrorBoundary.sanitizeForLog(errorInfo?.componentStack);
+      console.error('ErrorBoundary caught error:', errMsg, infoMsg);
+    } catch (e) {
+      // best-effort fallback
+      console.error('ErrorBoundary caught error (unable to sanitize):', String(error));
+    }
     
     this.setState({
       error,
@@ -97,8 +161,8 @@ export class ErrorBoundary extends Component<Props, State> {
                 </summary>
                 <pre className="text-xs overflow-auto p-2 bg-gray-50 rounded">
                   <code className="text-red-600">
-                    {this.state.error.toString()}
-                    {this.state.errorInfo?.componentStack}
+                            {ErrorBoundary.sanitizeForDisplay(this.state.error)}
+                            {this.state.errorInfo ? '\n' + ErrorBoundary.sanitizeForDisplay(this.state.errorInfo.componentStack) : ''}
                   </code>
                 </pre>
               </details>

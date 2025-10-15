@@ -3,7 +3,17 @@
  * Elegant display components for statistical outcomes
  */
 
-import React from 'react';
+import React, { useMemo } from 'react';
+
+// Small sanitizer for logs to avoid control characters being injected into console output
+const sanitizeForLog = (v: unknown) => {
+  try {
+    const s = String(v ?? '');
+    return s.replace(/[\x00-\x1F\x7F]+/g, ' ').slice(0, 1000);
+  } catch {
+    return 'unserializable';
+  }
+};
 import styled, { keyframes } from 'styled-components';
 import { motion } from 'framer-motion';
 
@@ -81,6 +91,27 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({
   actions,
   className,
 }) => {
+  // Memoize action buttons to avoid recreating handlers/elements on every render
+  const actionElements = useMemo(() => {
+    if (!actions || actions.length === 0) return null;
+    return actions.map((action, index) => (
+      <ActionButton
+        key={index}
+        onClick={(e: React.MouseEvent) => {
+          e.stopPropagation();
+          try {
+            action.onClick();
+          } catch (err) {
+            console.error('Action handler failed:', sanitizeForLog(err));
+          }
+        }}
+        disabled={disabled}
+      >
+        {action.icon && <span>{action.icon}</span>}
+        {action.label}
+      </ActionButton>
+    ));
+  }, [actions, disabled]);
   return (
     <CardContainer
       $variant={variant}
@@ -121,23 +152,7 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({
       </CardContent>
 
       {/* Actions */}
-      {actions && actions.length > 0 && (
-        <CardActions>
-          {actions.map((action, index) => (
-            <ActionButton
-              key={index}
-              onClick={(e) => {
-                e.stopPropagation();
-                action.onClick();
-              }}
-              disabled={disabled}
-            >
-              {action.icon && <span>{action.icon}</span>}
-              {action.label}
-            </ActionButton>
-          ))}
-        </CardActions>
-      )}
+      {actionElements && <CardActions>{actionElements}</CardActions>}
     </CardContainer>
   );
 };
@@ -195,7 +210,7 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   showPercentage = true,
   variant = 'default',
 }) => {
-  const percentage = Math.min((value / max) * 100, 100);
+  const percentage = useMemo(() => Math.min((value / max) * 100, 100), [value, max]);
 
   return (
     <ProgressContainer>
@@ -295,6 +310,22 @@ export const StatisticalResult: React.FC<StatisticalResultProps> = ({
     return `p = ${p.toFixed(3)}`;
   };
 
+  const ciInfo = useMemo(() => {
+    if (!confidenceInterval || confidenceInterval.length < 2) return null;
+    try {
+      // For now render marker at midpoint; computing a scaled position requires context about axis
+      const mid = (confidenceInterval[0] + confidenceInterval[1]) / 2;
+      return {
+        text: `[${confidenceInterval[0].toFixed(2)}, ${confidenceInterval[1].toFixed(2)}]`,
+        left: '50%',
+        mid,
+      };
+    } catch (err) {
+      console.error('StatisticalResult: failed to prepare CI info', sanitizeForLog(err));
+      return null;
+    }
+  }, [confidenceInterval]);
+
   return (
     <StatResultContainer>
       <StatMetricRow>
@@ -339,10 +370,10 @@ export const StatisticalResult: React.FC<StatisticalResultProps> = ({
         </StatDetailRow>
       )}
 
-      {confidenceInterval && (
+      {ciInfo && (
         <ConfidenceBar>
           <ConfidenceBarLine />
-          <ConfidenceBarMarker style={{ left: '50%' }} />
+          <ConfidenceBarMarker $left={ciInfo.left} />
         </ConfidenceBar>
       )}
     </StatResultContainer>
@@ -874,7 +905,7 @@ const ConfidenceBarLine = styled.div`
   transform: translateY(-50%);
 `;
 
-const ConfidenceBarMarker = styled.div`
+const ConfidenceBarMarker = styled.div<{ $left?: string }>`
   width: 8px;
   height: 8px;
   background: #3b82f6;
@@ -882,6 +913,7 @@ const ConfidenceBarMarker = styled.div`
   border-radius: 50%;
   position: absolute;
   top: 50%;
+  left: ${({ $left }) => $left || '50%'};
   transform: translate(-50%, -50%);
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 `;

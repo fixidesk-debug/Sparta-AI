@@ -4,8 +4,63 @@
  * Visual display of storage quota and usage
  */
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { StorageIndicatorProps } from '../types/fileManagement';
+import './StorageIndicator.css';
+
+// Small sanitizer for logs to avoid control characters being injected into console output
+const sanitizeForLog = (v: unknown) => {
+  try {
+    const s = String(v ?? '');
+    return s.replace(/[\x00-\x1F\x7F]+/g, ' ').slice(0, 1000);
+  } catch {
+    return 'unserializable';
+  }
+};
+
+// Format bytes for display (moved out to avoid re-creation on each render)
+const formatBytes = (bytes: number): string => {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let size = bytes;
+  let unitIndex = 0;
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex++;
+  }
+
+  return `${size.toFixed(2)} ${units[unitIndex]}`;
+};
+
+const colorClasses: Record<'red' | 'yellow' | 'blue', { bg: string; text: string; lightBg: string }> = {
+  red: {
+    bg: 'bg-red-600 dark:bg-red-500',
+    text: 'text-red-600 dark:text-red-400',
+    lightBg: 'bg-red-50 dark:bg-red-900/20',
+  },
+  yellow: {
+    bg: 'bg-yellow-600 dark:bg-yellow-500',
+    text: 'text-yellow-600 dark:text-yellow-400',
+    lightBg: 'bg-yellow-50 dark:bg-yellow-900/20',
+  },
+  blue: {
+    bg: 'bg-blue-600 dark:bg-blue-500',
+    text: 'text-blue-600 dark:text-blue-400',
+    lightBg: 'bg-blue-50 dark:bg-blue-900/20',
+  },
+};
+
+const getColor = (percentage: number): 'red' | 'yellow' | 'blue' => {
+  if (percentage >= 90) return 'red';
+  if (percentage >= 75) return 'yellow';
+  return 'blue';
+};
+
+// Map percentage to a discrete width class (5% steps) to avoid inline width styles
+const widthClassFor = (pct: number) => {
+  const p = Math.max(0, Math.min(100, Math.round(pct / 5) * 5));
+  return `viz-progress--w-${p}`;
+};
 
 const StorageIndicator: React.FC<StorageIndicatorProps> = ({
   quota,
@@ -13,45 +68,7 @@ const StorageIndicator: React.FC<StorageIndicatorProps> = ({
   onClick,
   className = '',
 }) => {
-  // Format bytes for display
-  const formatBytes = (bytes: number): string => {
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let size = bytes;
-    let unitIndex = 0;
-
-    while (size >= 1024 && unitIndex < units.length - 1) {
-      size /= 1024;
-      unitIndex++;
-    }
-
-    return `${size.toFixed(2)} ${units[unitIndex]}`;
-  };
-
-  // Get color based on usage percentage
-  const getColor = (): 'red' | 'yellow' | 'blue' => {
-    if (quota.percentage >= 90) return 'red';
-    if (quota.percentage >= 75) return 'yellow';
-    return 'blue';
-  };
-
-  const color = getColor();
-  const colorClasses: Record<'red' | 'yellow' | 'blue', { bg: string; text: string; lightBg: string }> = {
-    red: {
-      bg: 'bg-red-600 dark:bg-red-500',
-      text: 'text-red-600 dark:text-red-400',
-      lightBg: 'bg-red-50 dark:bg-red-900/20',
-    },
-    yellow: {
-      bg: 'bg-yellow-600 dark:bg-yellow-500',
-      text: 'text-yellow-600 dark:text-yellow-400',
-      lightBg: 'bg-yellow-50 dark:bg-yellow-900/20',
-    },
-    blue: {
-      bg: 'bg-blue-600 dark:bg-blue-500',
-      text: 'text-blue-600 dark:text-blue-400',
-      lightBg: 'bg-blue-50 dark:bg-blue-900/20',
-    },
-  };
+  const color = getColor(quota.percentage);
 
   // Compact view
   if (!detailed) {
@@ -70,8 +87,9 @@ const StorageIndicator: React.FC<StorageIndicatorProps> = ({
         </div>
         <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
           <div
-            className={`${colorClasses[color].bg} h-2 rounded-full transition-all duration-300`}
-            style={{ width: `${Math.min(quota.percentage, 100)}%` }}
+            className={`${colorClasses[color].bg} h-2 rounded-full transition-all duration-300 ${widthClassFor(
+              quota.percentage,
+            )}`}
           />
         </div>
         <div className="flex items-center justify-between mt-1">
@@ -119,8 +137,9 @@ const StorageIndicator: React.FC<StorageIndicatorProps> = ({
         </div>
         <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-3">
           <div
-            className={`${colorClasses[color].bg} h-3 rounded-full transition-all duration-300`}
-            style={{ width: `${Math.min(quota.percentage, 100)}%` }}
+            className={`${colorClasses[color].bg} h-3 rounded-full transition-all duration-300 ${widthClassFor(
+              quota.percentage,
+            )}`}
           />
         </div>
       </div>
@@ -141,30 +160,35 @@ const StorageIndicator: React.FC<StorageIndicatorProps> = ({
             Storage by Type
           </h4>
           <div className="space-y-2">
-            {Object.entries(quota.byType)
-              .sort(([, a], [, b]) => b - a)
-              .slice(0, 5)
-              .map(([type, size]) => {
-                const percentage = (size / quota.used) * 100;
-                return (
-                  <div key={type}>
-                    <div className="flex items-center justify-between text-sm mb-1">
-                      <span className="text-gray-600 dark:text-gray-400 capitalize">
-                        {type}
-                      </span>
-                      <span className="text-gray-900 dark:text-gray-100">
-                        {formatBytes(size)} ({percentage.toFixed(1)}%)
-                      </span>
+            {(() => {
+              try {
+                const entries = Object.entries(quota.byType || {});
+                const sorted = entries.sort(([, a], [, b]) => b - a).slice(0, 5);
+                return sorted.map(([type, size]) => {
+                  const percentage = quota.used > 0 ? (size / quota.used) * 100 : 0;
+                  return (
+                    <div key={type}>
+                      <div className="flex items-center justify-between text-sm mb-1">
+                        <span className="text-gray-600 dark:text-gray-400 capitalize">{type}</span>
+                        <span className="text-gray-900 dark:text-gray-100">
+                          {formatBytes(size)} ({percentage.toFixed(1)}%)
+                        </span>
+                      </div>
+                      <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
+                        <div
+                          className={`bg-gray-400 dark:bg-gray-500 h-1.5 rounded-full ${widthClassFor(
+                            percentage,
+                          )}`}
+                        />
+                      </div>
                     </div>
-                    <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
-                      <div
-                        className="bg-gray-400 dark:bg-gray-500 h-1.5 rounded-full"
-                        style={{ width: `${percentage}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                });
+              } catch (err) {
+                console.error('StorageIndicator: failed to render byType:', sanitizeForLog(err));
+                return <div className="text-sm text-red-600">Unable to show type breakdown</div>;
+              }
+            })()}
           </div>
         </div>
       )}
@@ -176,22 +200,26 @@ const StorageIndicator: React.FC<StorageIndicatorProps> = ({
             Storage by Folder
           </h4>
           <div className="space-y-2">
-            {Object.entries(quota.byFolder)
-              .sort(([, a], [, b]) => b - a)
-              .slice(0, 5)
-              .map(([folder, size]) => {
-                const percentage = (size / quota.used) * 100;
-                return (
-                  <div key={folder} className="flex items-center justify-between text-sm">
-                    <span className="text-gray-600 dark:text-gray-400 truncate flex-1">
-                      📁 {folder || 'Root'}
-                    </span>
-                    <span className="text-gray-900 dark:text-gray-100 ml-2">
-                      {formatBytes(size)} ({percentage.toFixed(1)}%)
-                    </span>
-                  </div>
-                );
-              })}
+            {(() => {
+              try {
+                const entries = Object.entries(quota.byFolder || {});
+                const sorted = entries.sort(([, a], [, b]) => b - a).slice(0, 5);
+                return sorted.map(([folder, size]) => {
+                  const percentage = quota.used > 0 ? (size / quota.used) * 100 : 0;
+                  return (
+                    <div key={folder} className="flex items-center justify-between text-sm">
+                      <span className="text-gray-600 dark:text-gray-400 truncate flex-1">📁 {folder || 'Root'}</span>
+                      <span className="text-gray-900 dark:text-gray-100 ml-2">
+                        {formatBytes(size)} ({percentage.toFixed(1)}%)
+                      </span>
+                    </div>
+                  );
+                });
+              } catch (err) {
+                console.error('StorageIndicator: failed to render byFolder:', sanitizeForLog(err));
+                return <div className="text-sm text-red-600">Unable to show folder breakdown</div>;
+              }
+            })()}
           </div>
         </div>
       )}

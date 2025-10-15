@@ -4,8 +4,32 @@
  * Drag-and-drop file upload zone with validation and preview
  */
 
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { FileUploadZoneProps } from '../types/fileManagement';
+
+// Sanitizer to avoid log injection and noisy outputs
+const sanitizeForLog = (v: unknown) => {
+  try {
+    const s = String(v ?? '');
+    return s.replace(/[\x00-\x1F\x7F]+/g, ' ').slice(0, 1000);
+  } catch {
+    return 'unserializable';
+  }
+};
+
+// Pure helper moved out to avoid re-creation per render
+const formatBytes = (bytes: number): string => {
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = bytes;
+  let unitIndex = 0;
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex++;
+  }
+
+  return `${size.toFixed(2)} ${units[unitIndex]}`;
+};
 
 const FileUploadZone: React.FC<FileUploadZoneProps> = ({
   onFilesSelected,
@@ -75,12 +99,16 @@ const FileUploadZone: React.FC<FileUploadZoneProps> = ({
       setIsDragActive(true);
 
       // Check if dragged items are files
-      const hasFiles = Array.from(e.dataTransfer.items).some(
-        item => item.kind === 'file'
-      );
+      try {
+        const hasFiles = Array.from(e.dataTransfer.items).some(
+          item => item.kind === 'file'
+        );
 
-      if (!hasFiles) {
-        setIsDragReject(true);
+        if (!hasFiles) {
+          setIsDragReject(true);
+        }
+      } catch (err) {
+        console.error('handleDragEnter failed:', sanitizeForLog(err));
       }
     },
     [disabled]
@@ -94,8 +122,12 @@ const FileUploadZone: React.FC<FileUploadZoneProps> = ({
 
       if (disabled) return;
 
-      // Set dropEffect for visual feedback
-      e.dataTransfer.dropEffect = isDragReject ? 'none' : 'copy';
+      try {
+        // Set dropEffect for visual feedback
+        e.dataTransfer.dropEffect = isDragReject ? 'none' : 'copy';
+      } catch (err) {
+        console.error('handleDragOver failed:', sanitizeForLog(err));
+      }
     },
     [disabled, isDragReject]
   );
@@ -123,37 +155,49 @@ const FileUploadZone: React.FC<FileUploadZoneProps> = ({
 
       if (disabled) return;
 
-      // Get files from drop
-      const droppedFiles = Array.from(e.dataTransfer.files);
+      try {
+        // Get files from drop
+        const droppedFiles = Array.from(e.dataTransfer.files);
 
-      if (droppedFiles.length === 0) return;
+        if (droppedFiles.length === 0) return;
 
-      // Validate and filter files
-      const validFiles: File[] = [];
-      const errors: string[] = [];
+        // Validate and filter files
+        const validFiles: File[] = [];
+        const errors: string[] = [];
 
-      droppedFiles.forEach(file => {
-        const validation = validateFile(file);
-        if (validation.valid) {
-          validFiles.push(file);
-        } else {
-          errors.push(`${file.name}: ${validation.error}`);
+        droppedFiles.forEach(file => {
+          const validation = validateFile(file);
+          if (validation.valid) {
+            validFiles.push(file);
+          } else {
+            errors.push(`${sanitizeForLog(file.name)}: ${sanitizeForLog(validation.error)}`);
+          }
+        });
+
+        // Show errors if any (sanitize displayed content)
+        if (errors.length > 0) {
+          console.error('File validation errors:', sanitizeForLog(errors.join('; ')));
+          try {
+            alert(`Some files were rejected:\n${errors.join('\n')}`);
+          } catch (err) {
+            console.warn('Unable to show alert for rejected files');
+          }
         }
-      });
 
-      // Show errors if any
-      if (errors.length > 0) {
-        console.error('File validation errors:', errors);
-        alert(`Some files were rejected:\n${errors.join('\n')}`);
-      }
-
-      // Call callback with valid files
-      if (validFiles.length > 0) {
-        if (!multiple && validFiles.length > 1) {
-          onFilesSelected([validFiles[0]]);
-        } else {
-          onFilesSelected(validFiles);
+        // Call callback with valid files (guard external callback)
+        if (validFiles.length > 0) {
+          try {
+            if (!multiple && validFiles.length > 1) {
+              onFilesSelected([validFiles[0]]);
+            } else {
+              onFilesSelected(validFiles);
+            }
+          } catch (err) {
+            console.error('onFilesSelected failed:', sanitizeForLog(err));
+          }
         }
+      } catch (err) {
+        console.error('handleDrop failed:', sanitizeForLog(err));
       }
     },
     [disabled, multiple, validateFile, onFilesSelected]
@@ -162,38 +206,50 @@ const FileUploadZone: React.FC<FileUploadZoneProps> = ({
   // Handle file input change
   const handleFileInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      const selectedFiles = e.target.files;
-      if (!selectedFiles || selectedFiles.length === 0) return;
+      try {
+        const selectedFiles = e.target.files;
+        if (!selectedFiles || selectedFiles.length === 0) return;
 
-      const filesArray = Array.from(selectedFiles);
+        const filesArray = Array.from(selectedFiles);
 
-      // Validate files
-      const validFiles: File[] = [];
-      const errors: string[] = [];
+        // Validate files
+        const validFiles: File[] = [];
+        const errors: string[] = [];
 
-      filesArray.forEach(file => {
-        const validation = validateFile(file);
-        if (validation.valid) {
-          validFiles.push(file);
-        } else {
-          errors.push(`${file.name}: ${validation.error}`);
+        filesArray.forEach(file => {
+          const validation = validateFile(file);
+          if (validation.valid) {
+            validFiles.push(file);
+          } else {
+            errors.push(`${sanitizeForLog(file.name)}: ${sanitizeForLog(validation.error)}`);
+          }
+        });
+
+        // Show errors if any
+        if (errors.length > 0) {
+          console.error('File validation errors:', sanitizeForLog(errors.join('; ')));
+          try {
+            alert(`Some files were rejected:\n${errors.join('\n')}`);
+          } catch (err) {
+            console.warn('Unable to show alert for rejected files');
+          }
         }
-      });
 
-      // Show errors if any
-      if (errors.length > 0) {
-        console.error('File validation errors:', errors);
-        alert(`Some files were rejected:\n${errors.join('\n')}`);
-      }
+        // Call callback with valid files
+        if (validFiles.length > 0) {
+          try {
+            onFilesSelected(validFiles);
+          } catch (err) {
+            console.error('onFilesSelected failed:', sanitizeForLog(err));
+          }
+        }
 
-      // Call callback with valid files
-      if (validFiles.length > 0) {
-        onFilesSelected(validFiles);
-      }
-
-      // Reset input
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
+        // Reset input
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+      } catch (err) {
+        console.error('handleFileInputChange failed:', sanitizeForLog(err));
       }
     },
     [validateFile, onFilesSelected]
@@ -206,28 +262,14 @@ const FileUploadZone: React.FC<FileUploadZoneProps> = ({
     }
   }, [disabled]);
 
-  // Format bytes for display
-  const formatBytes = (bytes: number): string => {
-    const units = ['B', 'KB', 'MB', 'GB'];
-    let size = bytes;
-    let unitIndex = 0;
-
-    while (size >= 1024 && unitIndex < units.length - 1) {
-      size /= 1024;
-      unitIndex++;
-    }
-
-    return `${size.toFixed(2)} ${units[unitIndex]}`;
-  };
-
-  // Get accept string for input
-  const getAcceptString = (): string => {
+  // Get accept string for input (memoized)
+  const acceptString = useMemo((): string => {
     if (accept !== '*') return accept;
     if (!config?.allowedExtensions || config.allowedExtensions[0] === '*') {
       return '*';
     }
     return config.allowedExtensions.map(ext => `.${ext}`).join(',');
-  };
+  }, [accept, config?.allowedExtensions]);
 
   return (
     <div
@@ -256,7 +298,7 @@ const FileUploadZone: React.FC<FileUploadZoneProps> = ({
         ref={fileInputRef}
         type="file"
         className="hidden"
-        accept={getAcceptString()}
+        accept={acceptString}
         multiple={multiple}
         disabled={disabled}
         onChange={handleFileInputChange}

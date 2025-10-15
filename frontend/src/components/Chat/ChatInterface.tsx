@@ -488,7 +488,26 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   }, [onFileUpload]);
 
   const handleMention = useCallback((user: User) => {
-    console.log('Mentioned user:', user);
+    const sanitizeForLog = (value: unknown, max = 200) =>
+      String(value ?? '')
+        .replace(/[\r\n]+/g, ' ')
+        .replace(/[\x00-\x1F\x7F]/g, '')
+        .trim()
+        .slice(0, max);
+
+    try {
+      // Log only non-sensitive, sanitized fields to avoid log injection
+      // and prevent dumping potentially large or nested user objects.
+      // eslint-disable-next-line no-console
+      console.log('Mentioned user:', {
+        id: sanitizeForLog(user.id, 64),
+        name: sanitizeForLog(user.name, 100),
+        email: sanitizeForLog(user.email, 100),
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('handleMention log failed:', String(err ?? 'unknown'));
+    }
   }, []);
 
   const handleMessageSelect = useCallback((messageId: string) => {

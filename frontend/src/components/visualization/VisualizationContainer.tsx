@@ -7,6 +7,7 @@ import React, { useState, useRef } from 'react';
 import styled from 'styled-components';
 import { motion, AnimatePresence } from 'framer-motion';
 import '../styles/visualization.scss';
+import './VisualizationContainer.css';
 
 export interface VisualizationContainerProps {
   title: string;
@@ -286,8 +287,20 @@ export interface DataLabelProps {
 }
 
 export const DataLabel: React.FC<DataLabelProps> = ({ value, label, color }) => {
+  // Map common color names to CSS classes; avoid inline styles for maintainability.
+  const colorClassMap: Record<string, string> = {
+    red: 'viz-data-label--red',
+    green: 'viz-data-label--green',
+    blue: 'viz-data-label--blue',
+    muted: 'viz-data-label--muted',
+    default: 'viz-data-label--default',
+  };
+
+  const normalized = typeof color === 'string' ? color.toLowerCase() : 'default';
+  const colorClass = colorClassMap[normalized] || colorClassMap.default;
+
   return (
-    <div className="viz-data-label" style={{ color }}>
+    <div className={`viz-data-label ${colorClass}`}>
       {label && <span>{label}: </span>}
       <strong>{value}</strong>
     </div>
@@ -341,14 +354,21 @@ export const LoadingSkeleton: React.FC<LoadingSkeletonProps> = ({
   height = '20px',
   borderRadius = '8px',
 }) => {
-  return (
-    <div
-      className="viz-skeleton"
-      style={{
-        width: typeof width === 'number' ? `${width}px` : width,
-        height: typeof height === 'number' ? `${height}px` : height,
-        borderRadius: typeof borderRadius === 'number' ? `${borderRadius}px` : borderRadius,
-      }}
-    />
-  );
+  // Use preset classes to avoid inline styles; fall back to default sizes when unknown values provided.
+  const parseSize = (v: string | number) => {
+    if (typeof v === 'number') return v >= 100 ? 'viz-skeleton--full' : 'viz-skeleton--small';
+    if (v === '100%' || v === '100vw') return 'viz-skeleton--full';
+    if (v.endsWith('px')) {
+      const n = Number(v.replace('px', ''));
+      if (n >= 40) return 'viz-skeleton--medium';
+      return 'viz-skeleton--small';
+    }
+    return 'viz-skeleton--full';
+  };
+
+  const widthClass = parseSize(width);
+  const heightClass = parseSize(height);
+  const radiusClass = borderRadius && String(borderRadius).includes('8') ? 'viz-skeleton--radius-md' : 'viz-skeleton--radius-sm';
+
+  return <div className={`viz-skeleton ${widthClass} ${heightClass} ${radiusClass}`} />;
 };

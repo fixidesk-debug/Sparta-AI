@@ -3,7 +3,17 @@
  * Timeline, Distribution, Correlation, Trend, Category, and Alert Cards
  */
 
-import React from 'react';
+import React, { useMemo } from 'react';
+
+// Small sanitizer for logs to avoid control characters being injected into console output
+const sanitizeForLog = (v: unknown) => {
+  try {
+    const s = String(v ?? '');
+    return s.replace(/[\x00-\x1F\x7F]+/g, ' ').slice(0, 1000);
+  } catch {
+    return 'unserializable';
+  }
+};
 import styled, { keyframes } from 'styled-components';
 import { motion } from 'framer-motion';
 
@@ -72,8 +82,12 @@ export interface AlertCardProps {
 // ==================== Timeline Card ====================
 
 export const TimelineCard: React.FC<TimelineCardProps> = ({ title, milestones }) => {
-  const completedCount = milestones.filter(m => m.completed).length;
-  const progress = (completedCount / milestones.length) * 100;
+  const { completedCount, progress } = useMemo(() => {
+    const total = Array.isArray(milestones) ? milestones.length : 0;
+    const completed = total > 0 ? milestones.filter(m => m.completed).length : 0;
+    const pct = total > 0 ? (completed / total) * 100 : 0;
+    return { completedCount: completed, progress: pct };
+  }, [milestones]);
 
   return (
     <TimelineContainer>
@@ -124,8 +138,12 @@ export const TimelineCard: React.FC<TimelineCardProps> = ({ title, milestones })
 export const DistributionCard: React.FC<DistributionCardProps> = ({ title, data, stats }) => {
   // Simple histogram visualization
   const bins = 10;
-  const histogram = createHistogram(data, bins);
-  const maxCount = Math.max(...histogram.map(b => b.count));
+  const histogram = useMemo(() => createHistogram(data, bins), [data, bins]);
+  const maxCount = useMemo(() => {
+    const counts = histogram.map(b => b.count);
+    const m = counts.length > 0 ? Math.max(...counts) : 0;
+    return isFinite(m) ? m : 0;
+  }, [histogram]);
 
   return (
     <DistributionContainer>
@@ -168,11 +186,15 @@ export const DistributionCard: React.FC<DistributionCardProps> = ({ title, data,
   );
 };
 
-// Helper function for histogram
+// Helper function for histogram (handles empty data safely)
 function createHistogram(data: number[], bins: number) {
+  if (!Array.isArray(data) || data.length === 0) {
+    return Array.from({ length: bins }, (_, i) => ({ range: `0-0`, count: 0 }));
+  }
+
   const min = Math.min(...data);
   const max = Math.max(...data);
-  const binWidth = (max - min) / bins;
+  const binWidth = (max - min) / bins || 1;
 
   const histogram = Array.from({ length: bins }, (_, i) => ({
     range: `${(min + i * binWidth).toFixed(1)}-${(min + (i + 1) * binWidth).toFixed(1)}`,
@@ -180,7 +202,8 @@ function createHistogram(data: number[], bins: number) {
   }));
 
   data.forEach(value => {
-    const binIndex = Math.min(Math.floor((value - min) / binWidth), bins - 1);
+    const idx = Math.min(Math.floor((value - min) / binWidth), bins - 1);
+    const binIndex = Number.isFinite(idx) ? idx : 0;
     histogram[binIndex].count++;
   });
 
@@ -221,16 +244,21 @@ export const CorrelationCard: React.FC<CorrelationCardProps> = ({
         <ScatterAxisLabel $position="x">{xLabel}</ScatterAxisLabel>
         <ScatterAxisLabel $position="y">{yLabel}</ScatterAxisLabel>
         <ScatterPoints>
-          {data.slice(0, 50).map((point, index) => (
-            <ScatterPoint
-              key={index}
-              $x={(point.x / Math.max(...data.map(d => d.x))) * 100}
-              $y={100 - (point.y / Math.max(...data.map(d => d.y))) * 100}
-              initial={{ scale: 0 }}
-              animate={{ scale: 1 }}
-              transition={{ delay: index * 0.02 }}
-            />
-          ))}
+          {(() => {
+            const slice = data.slice(0, 50);
+            const maxX = slice.length ? Math.max(...slice.map(d => d.x)) : 1;
+            const maxY = slice.length ? Math.max(...slice.map(d => d.y)) : 1;
+            return slice.map((point, index) => (
+              <ScatterPoint
+                key={index}
+                $x={(point.x / (maxX || 1)) * 100}
+                $y={100 - (point.y / (maxY || 1)) * 100}
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ delay: index * 0.02 }}
+              />
+            ));
+          })()}
         </ScatterPoints>
       </ScatterPlot>
 
@@ -400,7 +428,13 @@ export const AlertCard: React.FC<AlertCardProps> = ({
           {actions?.map((action, index) => (
             <AlertButton
               key={index}
-              onClick={action.onClick}
+              onClick={() => {
+                try {
+                  action.onClick();
+                } catch (err) {
+                  console.error('Alert action failed:', sanitizeForLog(err));
+                }
+              }}
               $primary={action.primary}
               $color={getAlertColor()}
             >
@@ -408,7 +442,16 @@ export const AlertCard: React.FC<AlertCardProps> = ({
             </AlertButton>
           ))}
           {dismissible && (
-            <AlertDismissButton onClick={onDismiss} title="Dismiss">
+            <AlertDismissButton
+              onClick={() => {
+                try {
+                  onDismiss?.();
+                } catch (err) {
+                  console.error('onDismiss handler failed:', sanitizeForLog(err));
+                }
+              }}
+              title="Dismiss"
+            >
               ✕
             </AlertDismissButton>
           )}

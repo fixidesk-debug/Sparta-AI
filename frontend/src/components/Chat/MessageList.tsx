@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import styled from 'styled-components';
 import { Message, User } from '../../types/chat';
 import { MessageBubble } from './MessageBubble';
@@ -17,11 +17,12 @@ const MessageListWrapper = styled.div`
 `;
 
 export const MessageList: React.FC<MessageListProps> = ({ messages, currentUser }) => {
-  return (
-    <MessageListWrapper>
-      {messages.map(msg => (
-        <MessageBubble key={msg.id} message={msg} currentUser={currentUser} />
-      ))}
-    </MessageListWrapper>
-  );
+  const items = useMemo(() => {
+    // Depend on messages reference and currentUser.id to avoid remapping each render
+    return messages.map(msg => (
+      <MessageBubble key={msg.id} message={msg} currentUser={currentUser} />
+    ));
+  }, [messages, currentUser?.id]);
+
+  return <MessageListWrapper>{items}</MessageListWrapper>;
 };

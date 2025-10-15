@@ -3,7 +3,7 @@
  * Displays syntax-highlighted code with copy functionality
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus, vs } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { CodeBlock as CodeBlockType } from '../types/chat';
@@ -27,25 +27,59 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 }) => {
   const [copied, setCopied] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
+  const copyTimer = useRef<number | null>(null);
+  
+  useEffect(() => {
+    return () => {
+      if (copyTimer.current) window.clearTimeout(copyTimer.current);
+    };
+  }, []);
 
-  const handleCopy = async () => {
+  // Small sanitizer to prevent log injection and remove control characters
+  const sanitizeForLog = (value: unknown): string => {
+    try {
+      let s: string;
+      if (typeof value === 'string') s = value;
+      else if (value == null) s = '';
+      else {
+        try {
+          s = JSON.stringify(value);
+        } catch {
+          s = String(value);
+        }
+      }
+      // remove CR/LF and other non-printable control chars
+      s = s.replace(/[\r\n\x00-\x1F\x7F]+/g, ' ');
+      const MAX = 1000;
+      if (s.length > MAX) s = s.slice(0, MAX) + '...';
+      return s;
+    } catch {
+      return '[unserializable]';
+    }
+  };
+
+  const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(code.code);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      // clear any previous timer
+      if (copyTimer.current) window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopied(false), 2000);
     } catch (error) {
-      console.error('Failed to copy code:', error);
+      console.error('Failed to copy code:', sanitizeForLog(error));
     }
-  };
+  }, [code.code]);
 
-  const handleExecute = () => {
-    if (onExecute) {
-      onExecute(code.code);
+  const handleExecute = useCallback(() => {
+    try {
+      if (onExecute) onExecute(code.code);
+    } catch (err) {
+      console.error('onExecute failed:', sanitizeForLog(err));
     }
-  };
+  }, [onExecute, code.code]);
 
-  const codeStyle = theme === 'dark' ? vscDarkPlus : vs;
-  const shouldTruncate = code.code.split('\n').length > 20;
+  const codeStyle = useMemo(() => (theme === 'dark' ? vscDarkPlus : vs), [theme]);
+  const shouldTruncate = useMemo(() => code.code.split('\n').length > 20, [code.code]);
 
   return (
     <div className={`code-block-wrapper ${className}`} role="region" aria-label="Code block">
@@ -165,7 +199,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
       {/* Error Display */}
       {code.error && code.isValid === false && (
         <div className="px-4 py-3 bg-red-900 bg-opacity-20 border-t border-red-800 rounded-b-lg" role="alert">
-          <p className="text-sm text-red-400 font-mono">{code.error}</p>
+          <p className="text-sm text-red-400 font-mono">{sanitizeForLog(code.error)}</p>
         </div>
       )}
     </div>

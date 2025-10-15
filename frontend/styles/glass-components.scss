@@ -267,6 +267,25 @@
     font-family: map-get($font-family, 'heading');
     @include gradient-text(map-get($colors, 'accent-400'), map-get($colors, 'accent-600'));
   }
+
+  // Image logo usage
+  &__logo img,
+  .app-logo {
+    height: 40px;
+    width: auto;
+    display: inline-block;
+    vertical-align: middle;
+    border-radius: 6px;
+    object-fit: contain;
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+  }
+
+  // Larger logo variant
+  .app-logo--lg {
+    height: 56px;
+  }
   
   &__nav {
     flex: 1;

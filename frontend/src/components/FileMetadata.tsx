@@ -4,7 +4,7 @@
  * Displays and edits file metadata
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { FileMetadataProps, FileItem } from '../types/fileManagement';
 
 const FileMetadata: React.FC<FileMetadataProps> = ({
@@ -17,6 +17,17 @@ const FileMetadata: React.FC<FileMetadataProps> = ({
   const [editedFile, setEditedFile] = useState<Partial<FileItem>>(file);
   const [newTag, setNewTag] = useState('');
 
+  // Sanitize logs to mitigate log injection and unexpected values
+  const sanitizeForLog = useCallback((v: unknown) => {
+    try {
+      if (v === null || v === undefined) return String(v);
+      const s = typeof v === 'string' ? v : JSON.stringify(v);
+      return s.replace(/[\r\n]+/g, ' ');
+    } catch (_err) {
+      return '<<unserializable>>';
+    }
+  }, []);
+
   // Handle field change
   const handleChange = useCallback(
     (field: keyof FileItem, value: unknown) => {
@@ -27,31 +38,42 @@ const FileMetadata: React.FC<FileMetadataProps> = ({
 
   // Add tag
   const addTag = useCallback(() => {
-    if (newTag.trim() && editedFile.tags) {
-      const tags = [...editedFile.tags, newTag.trim()];
-      setEditedFile(prev => ({ ...prev, tags }));
+    try {
+      const tag = newTag.trim();
+      if (!tag) return;
+
+      setEditedFile(prev => {
+        const tags = Array.isArray(prev.tags) ? [...prev.tags, tag] : [tag];
+        return { ...prev, tags };
+      });
+
       setNewTag('');
+    } catch (err) {
+      console.error('addTag error:', sanitizeForLog(err));
     }
-  }, [newTag, editedFile.tags]);
+  }, [newTag, sanitizeForLog]);
 
   // Remove tag
-  const removeTag = useCallback(
-    (tag: string) => {
-      if (editedFile.tags) {
-        const tags = editedFile.tags.filter(t => t !== tag);
-        setEditedFile(prev => ({ ...prev, tags }));
-      }
-    },
-    [editedFile.tags]
-  );
+  const removeTag = useCallback((tag: string) => {
+    try {
+      setEditedFile(prev => ({ ...prev, tags: prev.tags?.filter(t => t !== tag) }));
+    } catch (err) {
+      console.error('removeTag error:', sanitizeForLog(err));
+    }
+  }, [sanitizeForLog]);
 
   // Save changes
   const handleSave = useCallback(() => {
-    if (onUpdate) {
-      onUpdate(editedFile);
+    try {
+      if (onUpdate) {
+        onUpdate(editedFile);
+      }
+    } catch (err) {
+      console.error('handleSave error:', sanitizeForLog(err));
+    } finally {
+      setIsEditing(false);
     }
-    setIsEditing(false);
-  }, [editedFile, onUpdate]);
+  }, [editedFile, onUpdate, sanitizeForLog]);
 
   // Cancel editing
   const handleCancel = useCallback(() => {
@@ -60,7 +82,7 @@ const FileMetadata: React.FC<FileMetadataProps> = ({
   }, [file]);
 
   // Format bytes
-  const formatBytes = (bytes: number): string => {
+  const formatBytes = useCallback((bytes: number): string => {
     const units = ['B', 'KB', 'MB', 'GB'];
     let size = bytes;
     let unitIndex = 0;
@@ -71,12 +93,10 @@ const FileMetadata: React.FC<FileMetadataProps> = ({
     }
 
     return `${size.toFixed(2)} ${units[unitIndex]}`;
-  };
+  }, []);
 
   // Format date
-  const formatDate = (date: Date): string => {
-    return new Date(date).toLocaleString();
-  };
+  const formatDate = useCallback((date: Date): string => new Date(date).toLocaleString(), []);
 
   return (
     <div className={`file-metadata ${className}`}>
@@ -157,7 +177,7 @@ const FileMetadata: React.FC<FileMetadataProps> = ({
             Tags
           </label>
           <div className="flex flex-wrap gap-2 mb-2">
-            {(isEditing ? editedFile.tags : file.tags)?.map(tag => (
+            {Array.isArray(isEditing ? editedFile.tags : file.tags) && (isEditing ? editedFile.tags : file.tags)!.map(tag => (
               <span
                 key={tag}
                 className="flex items-center gap-1 px-2 py-1 bg-gray-200 dark:bg-gray-700 rounded text-sm"
@@ -181,7 +201,7 @@ const FileMetadata: React.FC<FileMetadataProps> = ({
                 type="text"
                 value={newTag}
                 onChange={e => setNewTag(e.target.value)}
-                onKeyPress={e => e.key === 'Enter' && addTag()}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }}
                 placeholder="Add tag..."
                 className="flex-1 px-3 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-sm"
               />
@@ -228,7 +248,7 @@ const FileMetadata: React.FC<FileMetadataProps> = ({
         </div>
 
         {/* Data file metadata */}
-        {file.metadata.rows && (
+        {file.metadata?.rows != null && (
           <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
             <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
               Data Properties
@@ -237,7 +257,7 @@ const FileMetadata: React.FC<FileMetadataProps> = ({
               <div className="flex justify-between">
                 <span className="text-sm text-gray-600 dark:text-gray-400">Rows</span>
                 <span className="text-sm text-gray-900 dark:text-gray-100">
-                  {file.metadata.rows.toLocaleString()}
+                  {typeof file.metadata.rows === 'number' ? file.metadata.rows.toLocaleString() : String(file.metadata.rows)}
                 </span>
               </div>
               <div className="flex justify-between">
@@ -251,7 +271,7 @@ const FileMetadata: React.FC<FileMetadataProps> = ({
         )}
 
         {/* Image metadata */}
-        {file.metadata.width && file.metadata.height && (
+        {file.metadata?.width != null && file.metadata?.height != null && (
           <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
             <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
               Image Properties

@@ -3,7 +3,7 @@
  * Text input with auto-resize, file attachment, and keyboard shortcuts
  */
 
-import React, { useState, useRef, useCallback, KeyboardEvent, ChangeEvent } from 'react';
+import React, { useState, useRef, useCallback, KeyboardEvent, ChangeEvent, useEffect, useMemo } from 'react';
 import { FileUpload } from './FileUpload';
 import { Attachment } from '../types/chat';
 
@@ -16,6 +16,16 @@ interface MessageInputProps {
   allowAttachments?: boolean;
   className?: string;
 }
+
+// Simple sanitizer for logs to reduce risk of log injection
+const sanitizeForLog = (v: unknown) => {
+  try {
+    const s = String(v ?? '');
+    return s.replace(/[\x00-\x1F\x7F]+/g, ' ').slice(0, 1000);
+  } catch {
+    return 'unserializable';
+  }
+};
 
 export const MessageInput: React.FC<MessageInputProps> = ({
   onSendMessage,
@@ -32,12 +42,26 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Clear typing timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
   // Auto-resize textarea
   const adjustTextareaHeight = useCallback(() => {
-    const textarea = textareaRef.current;
-    if (textarea) {
-      textarea.style.height = 'auto';
-      textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
+    try {
+      const textarea = textareaRef.current;
+      if (textarea) {
+        textarea.style.height = 'auto';
+        textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
+      }
+    } catch (err) {
+      console.error('adjustTextareaHeight failed:', sanitizeForLog(err));
     }
   }, []);
 
@@ -48,16 +72,21 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         setMessage(newValue);
         adjustTextareaHeight();
 
-        // Trigger typing indicator
+        // Trigger typing indicator (guard externally-provided callback)
         if (onTyping && newValue.length > 0) {
-          onTyping();
-          
-          // Debounce typing indicator
+          try {
+            onTyping();
+          } catch (err) {
+            console.error('onTyping failed:', sanitizeForLog(err));
+          }
+
+          // Debounce typing indicator: reset previous timer and set a new one
           if (typingTimeoutRef.current) {
             clearTimeout(typingTimeoutRef.current);
           }
           typingTimeoutRef.current = setTimeout(() => {
-            // Stop typing indicator after 2 seconds of no input
+            // Intentionally left blank - UI may infer typing has stopped
+            typingTimeoutRef.current = null;
           }, 2000);
         }
       }
@@ -68,14 +97,23 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const handleSend = useCallback(() => {
     const trimmedMessage = message.trim();
     if (trimmedMessage || attachments.length > 0) {
-      onSendMessage(trimmedMessage, attachments.length > 0 ? attachments : undefined);
+      try {
+        onSendMessage(trimmedMessage, attachments.length > 0 ? attachments : undefined);
+      } catch (err) {
+        console.error('onSendMessage failed:', sanitizeForLog(err));
+      }
+
       setMessage('');
       setAttachments([]);
       setShowFileUpload(false);
-      
+
       // Reset textarea height
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
+      try {
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+        }
+      } catch (err) {
+        console.error('reset textarea height failed:', sanitizeForLog(err));
       }
     }
   }, [message, attachments, onSendMessage]);
@@ -102,27 +140,38 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
   const handleFileSelect = useCallback((files: File[]) => {
     // Convert File[] to Attachment[]
-    const newAttachments: Attachment[] = files.map((file) => ({
-      id: `${Date.now()}-${file.name}`,
-      filename: file.name,
-      name: file.name,
-      size: file.size,
-      type: file.type || 'application/octet-stream',
-      uploadProgress: 0,
-      uploadStatus: 'pending' as const,
-    }));
-    
-    setAttachments((prev) => [...prev, ...newAttachments]);
-    setShowFileUpload(false);
+    try {
+      const newAttachments: Attachment[] = files.map((file) => ({
+        id: `${Date.now()}-${file.name}`,
+        filename: file.name,
+        name: file.name,
+        size: file.size,
+        type: file.type || 'application/octet-stream',
+        uploadProgress: 0,
+        uploadStatus: 'pending' as const,
+      }));
+
+      setAttachments((prev) => [...prev, ...newAttachments]);
+      setShowFileUpload(false);
+    } catch (err) {
+      console.error('handleFileSelect failed:', sanitizeForLog(err));
+    }
   }, []);
 
   const handleRemoveAttachment = useCallback((index: number) => {
-    setAttachments((prev) => prev.filter((_, i) => i !== index));
+    try {
+      setAttachments((prev) => prev.filter((_, i) => i !== index));
+    } catch (err) {
+      console.error('handleRemoveAttachment failed:', sanitizeForLog(err));
+    }
   }, []);
 
-  const characterCount = message.length;
-  const isOverLimit = characterCount > maxLength;
-  const canSend = (message.trim().length > 0 || attachments.length > 0) && !disabled && !isOverLimit;
+  const characterCount = useMemo(() => message.length, [message]);
+  const isOverLimit = useMemo(() => characterCount > maxLength, [characterCount, maxLength]);
+  const canSend = useMemo(
+    () => (message.trim().length > 0 || attachments.length > 0) && !disabled && !isOverLimit,
+    [message, attachments, disabled, isOverLimit]
+  );
 
   return (
     <div className={`message-input-container bg-white border-t border-gray-200 ${className}`}>

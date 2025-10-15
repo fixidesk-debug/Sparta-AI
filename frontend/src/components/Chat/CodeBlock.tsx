@@ -6,7 +6,7 @@
  * - react-syntax-highlighter: `npm install react-syntax-highlighter`
  * - @types/react-syntax-highlighter: `npm install @types/react-syntax-highlighter`
  */
-import React from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styled from 'styled-components';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -50,25 +50,93 @@ const CopyButton = styled.button`
 `;
 
 export const CodeBlock: React.FC<CodeBlockProps> = ({ block }) => {
-  const [isCopied, setIsCopied] = React.useState(false);
+  const [isCopied, setIsCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(block.code);
-    setIsCopied(true);
-    setTimeout(() => setIsCopied(false), 2000);
+  // Small sanitizer for attributes and text shown to users
+  const sanitize = (s: unknown, max = 200) =>
+    String(s ?? '')
+      .replace(/[\r\n]+/g, ' ')
+      .trim()
+      .slice(0, max);
+
+  const customStyle = useMemo(() => ({ margin: 0 as const }), []);
+
+  const doFallbackCopy = (text: string) => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'absolute';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    const sel = document.getSelection();
+    const prevRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+    ta.select();
+    try {
+      document.execCommand('copy');
+    } finally {
+      document.body.removeChild(ta);
+      if (prevRange && sel) {
+        sel.removeAllRanges();
+        sel.addRange(prevRange);
+      }
+    }
   };
+
+  const handleCopy = useCallback(async () => {
+    const code = String(block.code ?? '');
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(code);
+      } else {
+        doFallbackCopy(code);
+      }
+      setIsCopied(true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setIsCopied(false), 2000);
+    } catch (err) {
+      // Don't throw to avoid breaking UI; log sanitized error for diagnostics
+      // eslint-disable-next-line no-console
+      console.error('CodeBlock copy failed:', String(err ?? 'unknown'));
+      // Attempt fallback once more
+      try {
+        doFallbackCopy(code);
+        setIsCopied(true);
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => setIsCopied(false), 2000);
+      } catch (e) {
+        // final silent failure
+      }
+    }
+  }, [block.code]);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, []);
+
+  const highlighted = useMemo(
+    () => (
+      <SyntaxHighlighter language={sanitize(block.language)} style={vscDarkPlus} customStyle={customStyle}>
+        {String(block.code ?? '')}
+      </SyntaxHighlighter>
+    ),
+    [block.code, block.language, customStyle]
+  );
 
   return (
     <CodeWrapper>
       <Header>
-        <span>{block.language}</span>
-        <CopyButton onClick={handleCopy}>
+        <span>{sanitize(block.language)}</span>
+        <CopyButton onClick={handleCopy} aria-label={`Copy ${sanitize(block.language)} code`}>
           {isCopied ? 'Copied!' : 'Copy'}
         </CopyButton>
       </Header>
-      <SyntaxHighlighter language={block.language} style={vscDarkPlus} customStyle={{ margin: 0 }}>
-        {block.code}
-      </SyntaxHighlighter>
+      {highlighted}
     </CodeWrapper>
   );
 };

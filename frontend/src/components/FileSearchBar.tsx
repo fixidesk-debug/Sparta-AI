@@ -4,7 +4,7 @@
  * Advanced search with filters for file management
  */
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import {
   FileSearchBarProps,
   FileSearchQuery,
@@ -24,6 +24,17 @@ const FileSearchBar: React.FC<FileSearchBarProps> = ({
   const [sortBy, setSortBy] = useState<FileSortField>('uploadedAt');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const filterRef = useRef<HTMLDivElement>(null);
+
+  // Sanitize values for logging (mitigate log injection)
+  const sanitizeForLog = useCallback((v: unknown) => {
+    try {
+      if (v === null || v === undefined) return String(v);
+      const s = typeof v === 'string' ? v : JSON.stringify(v);
+      return s.replace(/[\r\n]+/g, ' ');
+    } catch (err) {
+      return '<<unserializable>>';
+    }
+  }, []);
 
   // Close filters on outside click
   useEffect(() => {
@@ -78,9 +89,53 @@ const FileSearchBar: React.FC<FileSearchBarProps> = ({
   }, []);
 
   // Count active filters
-  const activeFilterCount = Object.keys(filters).filter(
-    key => filters[key as keyof FileFilters] !== undefined
-  ).length;
+  const activeFilterCount = useMemo(() =>
+    Object.keys(filters).filter(key => filters[key as keyof FileFilters] !== undefined).length,
+  [filters]);
+
+  // Helpers for date/size quick presets extracted for readability
+  const applyDatePreset = useCallback((preset: string) => {
+    try {
+      if (preset === '') {
+        updateFilter('dateRange', undefined);
+        return;
+      }
+      const now = new Date();
+      if (preset === 'today') {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        updateFilter('dateRange', { from: today, to: now });
+      } else if (preset === 'week') {
+        const weekAgo = new Date();
+        weekAgo.setDate(weekAgo.getDate() - 7);
+        updateFilter('dateRange', { from: weekAgo, to: now });
+      } else if (preset === 'month') {
+        const monthAgo = new Date();
+        monthAgo.setMonth(monthAgo.getMonth() - 1);
+        updateFilter('dateRange', { from: monthAgo, to: now });
+      }
+    } catch (err) {
+      console.error('applyDatePreset error:', sanitizeForLog(err));
+    }
+  }, [updateFilter, sanitizeForLog]);
+
+  const applySizePreset = useCallback((preset: string) => {
+    try {
+      if (preset === '') {
+        updateFilter('sizeRange', undefined);
+        return;
+      }
+      if (preset === 'small') {
+        updateFilter('sizeRange', { min: 0, max: 1024 * 1024 });
+      } else if (preset === 'medium') {
+        updateFilter('sizeRange', { min: 1024 * 1024, max: 10 * 1024 * 1024 });
+      } else if (preset === 'large') {
+        updateFilter('sizeRange', { min: 10 * 1024 * 1024, max: Infinity });
+      }
+    } catch (err) {
+      console.error('applySizePreset error:', sanitizeForLog(err));
+    }
+  }, [updateFilter, sanitizeForLog]);
 
   return (
     <div className={`file-search-bar relative ${className}`}>
@@ -182,23 +237,7 @@ const FileSearchBar: React.FC<FileSearchBarProps> = ({
               </label>
               <select
                 value={filters.dateRange ? 'custom' : ''}
-                onChange={e => {
-                  if (e.target.value === '') {
-                    updateFilter('dateRange', undefined);
-                  } else if (e.target.value === 'today') {
-                    const today = new Date();
-                    today.setHours(0, 0, 0, 0);
-                    updateFilter('dateRange', { from: today, to: new Date() });
-                  } else if (e.target.value === 'week') {
-                    const weekAgo = new Date();
-                    weekAgo.setDate(weekAgo.getDate() - 7);
-                    updateFilter('dateRange', { from: weekAgo, to: new Date() });
-                  } else if (e.target.value === 'month') {
-                    const monthAgo = new Date();
-                    monthAgo.setMonth(monthAgo.getMonth() - 1);
-                    updateFilter('dateRange', { from: monthAgo, to: new Date() });
-                  }
-                }}
+                onChange={e => applyDatePreset(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
                 aria-label="Date range filter"
               >
@@ -217,20 +256,7 @@ const FileSearchBar: React.FC<FileSearchBarProps> = ({
               </label>
               <select
                 value={filters.sizeRange ? 'custom' : ''}
-                onChange={e => {
-                  if (e.target.value === '') {
-                    updateFilter('sizeRange', undefined);
-                  } else if (e.target.value === 'small') {
-                    updateFilter('sizeRange', { min: 0, max: 1024 * 1024 }); // <1MB
-                  } else if (e.target.value === 'medium') {
-                    updateFilter('sizeRange', {
-                      min: 1024 * 1024,
-                      max: 10 * 1024 * 1024,
-                    }); // 1-10MB
-                  } else if (e.target.value === 'large') {
-                    updateFilter('sizeRange', { min: 10 * 1024 * 1024, max: Infinity }); // >10MB
-                  }
-                }}
+                onChange={e => applySizePreset(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
                 aria-label="File size filter"
               >
@@ -274,8 +300,12 @@ const FileSearchBar: React.FC<FileSearchBarProps> = ({
           {/* Apply button */}
           <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
             <button
-              onClick={() => {
-                handleSearch();
+                onClick={() => {
+                try {
+                  handleSearch();
+                } catch (err) {
+                  console.error('Apply filters failed:', sanitizeForLog(err));
+                }
                 setShowFilters(false);
               }}
               className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"

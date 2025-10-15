@@ -1,0 +1,52 @@
+/* StorageIndicator styles to replace inline widths */
+.storage-indicator { display: block; }
+
+/* discrete width classes in 5% steps */
+/* This avoids inline style width attributes and improves cacheability */
+.viz-progress--w-0  { width: 0%; }
+.viz-progress--w-5  { width: 5%; }
+.viz-progress--w-10 { width: 10%; }
+.viz-progress--w-15 { width: 15%; }
+.viz-progress--w-20 { width: 20%; }
+.viz-progress--w-25 { width: 25%; }
+.viz-progress--w-30 { width: 30%; }
+.viz-progress--w-35 { width: 35%; }
+.viz-progress--w-40 { width: 40%; }
+.viz-progress--w-45 { width: 45%; }
+.viz-progress--w-50 { width: 50%; }
+.viz-progress--w-55 { width: 55%; }
+.viz-progress--w-60 { width: 60%; }
+.viz-progress--w-65 { width: 65%; }
+.viz-progress--w-70 { width: 70%; }
+.viz-progress--w-75 { width: 75%; }
+.viz-progress--w-80 { width: 80%; }
+.viz-progress--w-85 { width: 85%; }
+.viz-progress--w-90 { width: 90%; }
+.viz-progress--w-95 { width: 95%; }
+.viz-progress--w-100{ width: 100%; }
+
+/* small helper - ensure transition applies to width changes */
+.viz-progress--w-0,
+.viz-progress--w-5,
+.viz-progress--w-10,
+.viz-progress--w-15,
+.viz-progress--w-20,
+.viz-progress--w-25,
+.viz-progress--w-30,
+.viz-progress--w-35,
+.viz-progress--w-40,
+.viz-progress--w-45,
+.viz-progress--w-50,
+.viz-progress--w-55,
+.viz-progress--w-60,
+.viz-progress--w-65,
+.viz-progress--w-70,
+.viz-progress--w-75,
+.viz-progress--w-80,
+.viz-progress--w-85,
+.viz-progress--w-90,
+.viz-progress--w-95,
+.viz-progress--w-100 {
+  display: inline-block;
+  transition: width 300ms ease;
+}

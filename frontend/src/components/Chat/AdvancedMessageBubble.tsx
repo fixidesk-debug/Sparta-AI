@@ -3,21 +3,37 @@
  * Sophisticated message display with all requested features
  */
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import styled from 'styled-components';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Message, User, MessageType } from '../../types/chat.types';
 
+/**
+ * Handler invoked for message-level actions (edit, delete, reply, share).
+ * Accepts the message ID for the target message.
+ */
+type MessageAction = (messageId: string) => void;
+
+/**
+ * Handler invoked for reaction actions. Receives message ID and the reaction emoji/type.
+ */
+type ReactionAction = (messageId: string, emoji: string) => void;
+
+/**
+ * Props for the AdvancedMessageBubble component.
+ * Contains the message to render, the current user, optional global user list,
+ * and a collection of optional handlers for user interactions.
+ */
 interface AdvancedMessageBubbleProps {
   message: Message;
   currentUser: User;
   allUsers?: User[];
-  onEdit?: (messageId: string) => void;
-  onDelete?: (messageId: string) => void;
-  onReact?: (messageId: string, reaction: string) => void;
-  onReaction?: (messageId: string, emoji: string) => void;
-  onReply?: (messageId: string) => void;
-  onShare?: (messageId: string) => void;
+  onEdit?: MessageAction;
+  onDelete?: MessageAction;
+  onReact?: ReactionAction;
+  onReaction?: ReactionAction;
+  onReply?: MessageAction;
+  onShare?: MessageAction;
   showActions?: boolean;
   showThreadIndicator?: boolean;
   replyCount?: number;
@@ -41,8 +57,20 @@ export const AdvancedMessageBubble: React.FC<AdvancedMessageBubbleProps> = ({
   const isOwnMessage = message.sender.id === currentUser.id;
   const isAI = message.sender.role === 'ai';
   
-  // Merge onReact and onReaction handlers
-  const handleReaction = onReaction || onReact;
+  // Merge onReact and onReaction handlers (stable reference)
+  const handleReaction = useMemo(() => onReaction || onReact, [onReaction, onReact]);
+
+  // Memoize rendered content to avoid re-computing JSX each render
+  const contentNodes = useMemo(
+    () => renderMessageContent(message.content, message.mentions),
+    [message.id, message.content, message.mentions?.length]
+  );
+
+  // Memoize reactions rendering
+  const reactionNodes = useMemo(() => {
+    if (!message.reactions || message.reactions.length === 0) return null;
+    return renderReactions(message.reactions, currentUser.id, handleReaction as any, message.id);
+  }, [message.id, message.reactions?.length, currentUser.id, handleReaction]);
 
   return (
     <MessageContainer
@@ -87,9 +115,7 @@ export const AdvancedMessageBubble: React.FC<AdvancedMessageBubbleProps> = ({
         )}
 
         <Bubble $isOwnMessage={isOwnMessage} $isAI={isAI} $type={message.type}>
-          <MessageText>
-            {renderMessageContent(message.content, message.mentions)}
-          </MessageText>
+          <MessageText>{contentNodes}</MessageText>
 
           {message.metadata && (
             <MetadataFooter>
@@ -120,11 +146,7 @@ export const AdvancedMessageBubble: React.FC<AdvancedMessageBubbleProps> = ({
             </MetadataFooter>
           )}
 
-          {message.reactions && message.reactions.length > 0 && (
-            <ReactionsContainer>
-              {renderReactions(message.reactions, currentUser.id, handleReaction, message.id)}
-            </ReactionsContainer>
-          )}
+          {reactionNodes && <ReactionsContainer>{reactionNodes}</ReactionsContainer>}
         </Bubble>
 
         {message.replyCount && message.replyCount > 0 && (
@@ -241,29 +263,55 @@ const getTypeIcon = (type: MessageType): string => {
   return icons[type];
 };
 
+// Small sanitizer for rendering attributes and trimmed display names
+const _sanitize = (v: unknown, max = 120) =>
+  String(v ?? '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/[\x00-\x1F\x7F]/g, '')
+    .trim()
+    .slice(0, max);
+
 const renderMessageContent = (content: string, mentions?: any[]): React.ReactNode => {
   if (!mentions || mentions.length === 0) return content;
 
-  const parts: React.ReactNode[] = [];
-  let lastIndex = 0;
+  try {
+    const parts: React.ReactNode[] = [];
+    let lastIndex = 0;
 
-  mentions.sort((a, b) => a.startIndex - b.startIndex).forEach((mention, i) => {
-    if (lastIndex < mention.startIndex) {
-      parts.push(content.substring(lastIndex, mention.startIndex));
+    // Do NOT mutate incoming mentions array; copy before sorting
+    const sorted = [...mentions].sort((a, b) => (a.startIndex || 0) - (b.startIndex || 0));
+
+    sorted.forEach((mention, i) => {
+      const start = Math.max(0, mention.startIndex || 0);
+      const end = Math.max(start, mention.endIndex || start);
+
+      if (lastIndex < start) {
+        parts.push(content.substring(lastIndex, start));
+      }
+
+      const name = _sanitize(mention.userName || mention.displayName || 'user', 64);
+      const key = mention.id || `mention-${start}-${i}`;
+
+      parts.push(
+        <MentionHighlight key={key} title={`@${name}`}>
+          @{name}
+        </MentionHighlight>
+      );
+
+      lastIndex = Math.max(lastIndex, end);
+    });
+
+    if (lastIndex < content.length) {
+      parts.push(content.substring(lastIndex));
     }
-    parts.push(
-      <MentionHighlight key={`mention-${i}`} title={`@${mention.userName}`}>
-        @{mention.userName}
-      </MentionHighlight>
-    );
-    lastIndex = mention.endIndex;
-  });
 
-  if (lastIndex < content.length) {
-    parts.push(content.substring(lastIndex));
+    return parts;
+  } catch (err) {
+    // Don't allow a malformed mentions array to break rendering
+    // eslint-disable-next-line no-console
+    console.error('renderMessageContent error:', String(err ?? 'unknown'));
+    return content;
   }
-
-  return parts;
 };
 
 const renderReactions = (
@@ -272,30 +320,43 @@ const renderReactions = (
   onReact?: (messageId: string, reaction: string) => void,
   messageId?: string
 ): React.ReactNode => {
-  const grouped = reactions.reduce((acc, reaction) => {
-    if (!acc[reaction.type]) acc[reaction.type] = [];
-    acc[reaction.type].push(reaction);
-    return acc;
-  }, {} as Record<string, any[]>);
+  try {
+    // Group reactions by type without creating many intermediate objects
+    const grouped: Record<string, any[]> = Object.create(null);
+    for (let i = 0; i < reactions.length; i++) {
+      const reaction = reactions[i];
+      const type = reaction?.type || 'unknown';
+      if (!grouped[type]) grouped[type] = [];
+      grouped[type].push(reaction);
+    }
 
-  return Object.entries(grouped).map(([type, reactionList]) => {
-    const hasReacted = (reactionList as any[]).some((r: any) => r.userId === currentUserId);
-    const userNames = (reactionList as any[]).map((r: any) => r.userName).join(', ');
-    
-    return (
-      <ReactionBubble
-        key={type}
-        $active={hasReacted}
-        onClick={() => messageId && onReact?.(messageId, type)}
-        title={userNames}
-        whileHover={{ scale: 1.05 }}
-        whileTap={{ scale: 0.95 }}
-      >
-        <ReactionEmoji>{type}</ReactionEmoji>
-        <ReactionCount>{(reactionList as any[]).length}</ReactionCount>
-      </ReactionBubble>
-    );
-  });
+    const out: React.ReactNode[] = [];
+    for (const type of Object.keys(grouped)) {
+      const reactionList = grouped[type];
+      const hasReacted = reactionList.some((r: any) => r.userId === currentUserId);
+      const userNames = reactionList.map((r: any) => _sanitize(r.userName || r.displayName || '')).join(', ');
+
+      out.push(
+        <ReactionBubble
+          key={type}
+          $active={hasReacted}
+          onClick={() => messageId && onReact?.(messageId, type)}
+          title={userNames}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+        >
+          <ReactionEmoji>{type}</ReactionEmoji>
+          <ReactionCount>{reactionList.length}</ReactionCount>
+        </ReactionBubble>
+      );
+    }
+
+    return out;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('renderReactions error:', String(err ?? 'unknown'));
+    return null;
+  }
 };
 
 // Styled Components

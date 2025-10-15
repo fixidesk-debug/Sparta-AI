@@ -3,7 +3,7 @@
  * Shows all active users with their status
  */
 
-import React, { useState } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import styled from 'styled-components';
 import { motion, AnimatePresence } from 'framer-motion';
 import { User, UserStatus } from '../../types/chat.types';
@@ -26,28 +26,35 @@ export const UserPresencePanel: React.FC<UserPresencePanelProps> = ({
 }) => {
   const [isExpanded, setIsExpanded] = useState(showExpanded);
 
-  // Sort users: online first, then by name
-  const sortedUsers = [...users].sort((a, b) => {
-    const statusPriority = { online: 0, away: 1, busy: 2, offline: 3 };
-    const aPriority = statusPriority[a.status];
-    const bPriority = statusPriority[b.status];
-    
-    if (aPriority !== bPriority) {
-      return aPriority - bPriority;
+  // Memoize sorted users to avoid re-sorting on every render
+  const sortedUsers = useMemo(() => {
+    const arr = [...users];
+    const statusPriority: Record<UserStatus, number> = { online: 0, away: 1, busy: 2, offline: 3 };
+    arr.sort((a, b) => {
+      const aPriority = statusPriority[a.status];
+      const bPriority = statusPriority[b.status];
+      if (aPriority !== bPriority) return aPriority - bPriority;
+      return a.name.localeCompare(b.name);
+    });
+    return arr;
+  }, [users]);
+
+  const visibleUsers = useMemo(() => (isExpanded ? sortedUsers : sortedUsers.slice(0, maxVisible)), [isExpanded, sortedUsers, maxVisible]);
+  const hiddenCount = useMemo(() => Math.max(0, sortedUsers.length - maxVisible), [sortedUsers, maxVisible]);
+
+  // Compute status counts once per users change
+  const statusCounts = useMemo(() => {
+    const counts: Record<UserStatus, number> = { online: 0, away: 0, busy: 0, offline: 0 };
+    for (const u of users) {
+      counts[u.status] = (counts[u.status] || 0) + 1;
     }
-    return a.name.localeCompare(b.name);
-  });
+    return counts;
+  }, [users]);
 
-  const visibleUsers = isExpanded ? sortedUsers : sortedUsers.slice(0, maxVisible);
-  const hiddenCount = sortedUsers.length - maxVisible;
+  const getStatusCount = useCallback((status: UserStatus) => statusCounts[status] || 0, [statusCounts]);
 
-  const getStatusCount = (status: UserStatus): number => {
-    return users.filter(u => u.status === status).length;
-  };
-
-  const formatLastSeen = (lastSeen?: Date): string => {
+  const formatLastSeen = useCallback((lastSeen?: Date): string => {
     if (!lastSeen) return 'Never';
-    
     const now = new Date();
     const diff = now.getTime() - lastSeen.getTime();
     const minutes = Math.floor(diff / 60000);
@@ -58,9 +65,8 @@ export const UserPresencePanel: React.FC<UserPresencePanelProps> = ({
     if (minutes < 60) return `${minutes}m ago`;
     if (hours < 24) return `${hours}h ago`;
     if (days < 7) return `${days}d ago`;
-    
     return lastSeen.toLocaleDateString();
-  };
+  }, []);
 
   return (
     <PanelContainer>
