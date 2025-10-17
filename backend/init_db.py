@@ -17,21 +17,26 @@ def init_db():
     # Create a test user if none exists
     db = SessionLocal()
     try:
-        existing_user = db.query(User).filter(User.email == "admin@spartaai.com").first()
+        # Check both email formats
+        existing_user = db.query(User).filter(
+            (User.email == "admin@sparta.ai") | (User.email == "admin@spartaai.com")
+        ).first()
+        
         if not existing_user:
             print("Creating default admin user...")
             admin_user = User(
-                email="admin@spartaai.com",
+                email="admin@sparta.ai",
                 hashed_password=get_password_hash("admin123"),
                 full_name="Admin User"
             )
             db.add(admin_user)
             db.commit()
             print("✓ Default admin user created")
-            print("  Email: admin@spartaai.com")
+            print("  Email: admin@sparta.ai")
             print("  Password: admin123")
         else:
             print("✓ Admin user already exists")
+            print(f"  Email: {existing_user.email}")
     except Exception as e:
         print(f"✗ Error creating admin user: {e}")
         db.rollback()

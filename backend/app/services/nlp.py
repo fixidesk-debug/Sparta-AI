@@ -1,12 +1,67 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
 from app.db.models import File
-from app.services.ai_code_generator import AICodeGenerator, CodeGenerationResult
+from app.services.ai_code_generator import AICodeGenerator, CodeGenerationResult, AnalysisType
 from app.services.ai_providers import AIProvider
 from app.core.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _generate_follow_up_questions(query: str, analysis_type: Optional[AnalysisType]) -> List[str]:
+    """Generate contextual follow-up questions based on the analysis type."""
+    
+    # Default questions
+    default_questions = [
+        "Can you show me the distribution of the data?",
+        "What are the key statistics for this dataset?",
+        "Are there any outliers or anomalies?"
+    ]
+    
+    if not analysis_type:
+        return default_questions
+    
+    # Type-specific questions
+    questions_map = {
+        AnalysisType.VISUALIZATION: [
+            "Can you create a different type of chart for this data?",
+            "What insights can we draw from this visualization?",
+            "Can you add trend lines or annotations?"
+        ],
+        AnalysisType.STATISTICAL: [
+            "Can you perform a correlation analysis?",
+            "What's the distribution of the key variables?",
+            "Are there any significant patterns in the data?"
+        ],
+        AnalysisType.EXPLORATORY: [
+            "What are the key statistics for each column?",
+            "Can you show the distribution of values?",
+            "Are there any missing values or outliers?"
+        ],
+        AnalysisType.AGGREGATION: [
+            "Can you group by a different column?",
+            "What are the top 10 values?",
+            "Can you calculate additional aggregate metrics?"
+        ],
+        AnalysisType.CORRELATION: [
+            "Which variables are most strongly correlated?",
+            "Can you visualize the correlation matrix?",
+            "What relationships exist in the data?"
+        ],
+        AnalysisType.TIME_SERIES: [
+            "What are the trends over time?",
+            "Can you forecast future values?",
+            "Are there any seasonal patterns?"
+        ],
+        AnalysisType.CLEANING: [
+            "How many missing values are there?",
+            "Can you show data quality issues?",
+            "What cleaning steps were applied?"
+        ]
+    }
+    
+    return questions_map.get(analysis_type, default_questions)
 
 
 async def process_natural_language_query(
@@ -46,12 +101,8 @@ async def process_natural_language_query(
                     "explanation": None
                 }
         
-        # Determine AI provider
-        provider_name = settings.DEFAULT_AI_PROVIDER.lower()
-        if provider_name == "anthropic" and settings.ANTHROPIC_API_KEY:
-            provider = AIProvider.ANTHROPIC
-        else:
-            provider = AIProvider.OPENAI
+        # Use Groq as the only AI provider
+        provider = AIProvider.GROQ
         
         # Create AI code generator
         generator = AICodeGenerator(
@@ -82,12 +133,17 @@ async def process_natural_language_query(
         # Return result
         if result.is_valid:
             logger.info(f"Successfully generated code for query: {query_text[:50]}...")
+            
+            # Generate follow-up questions based on the analysis type
+            follow_up_questions = _generate_follow_up_questions(query_text, result.analysis_type)
+            
             return {
                 "success": True,
                 "code": result.code,
                 "explanation": result.explanation,
                 "analysis_type": result.analysis_type.value if result.analysis_type else "custom",
                 "metadata": result.metadata,
+                "follow_up_questions": follow_up_questions,
                 "error": None
             }
         else:

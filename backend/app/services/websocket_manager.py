@@ -528,9 +528,11 @@ class WebSocketManager:
         
         # Route message based on type
         # (This is where you'd integrate with your business logic)
+        # Sanitize message for logging to prevent log injection
+        safe_msg_type = str(message_type).replace('\r', '').replace('\n', '') if message_type else 'unknown'
+        safe_msg_preview = json.dumps(message, default=str)[:100].replace('\r', '').replace('\n', '')
         logger.debug(
-            f"Received {message_type} from {connection_id}: "
-            f"{json.dumps(message, default=str)[:100]}"
+            f"Received {safe_msg_type} from {connection_id}: {safe_msg_preview}"
         )
     
     async def start_background_tasks(self) -> None:

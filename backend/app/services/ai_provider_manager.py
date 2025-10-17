@@ -4,13 +4,24 @@ Handles model selection, load balancing, failover, and monitoring
 """
 from typing import Optional, Dict, Any, List, Tuple, AsyncGenerator
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import asyncio
 import logging
 import json
 import hashlib
+import os
+import hmac
+import secrets
 from collections import defaultdict, deque
+
+# Process-level secret for cache HMAC key; override via environment variable CACHE_KEY_SECRET
+_CACHE_KEY_SECRET = os.environ.get("CACHE_KEY_SECRET")
+if _CACHE_KEY_SECRET is None:
+    # generate a per-process random secret if not provided (avoids predictable keys)
+    _CACHE_KEY_SECRET = secrets.token_bytes(32)
+elif isinstance(_CACHE_KEY_SECRET, str):
+    _CACHE_KEY_SECRET = _CACHE_KEY_SECRET.encode()
 
 from .model_selector import ModelSelector, TaskType
 from .request_router import RequestRouter
@@ -53,15 +64,17 @@ class ProviderConfig:
 
 
 @dataclass
-class AIRequest:
-    """Request to AI provider"""
-    messages: List[Dict[str, str]]
-    task_type: TaskType
-    temperature: float = 0.7
-    max_tokens: int = 2000
-    stream: bool = False
-    model_preference: Optional[str] = None
-    provider_preference: Optional[ProviderType] = None
+    def get_cache_key(self) -> str:
+        """Generate cache key for request"""
+        content = json.dumps({
+            "messages": self.messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "task_type": self.task_type.value
+        }, sort_keys=True)
+        # Use a keyed HMAC to generate cache keys (not for password hashing)
+        # This avoids use of a bare hash in contexts where a secret is expected.
+        return hmac.new(_CACHE_KEY_SECRET, content.encode(), hashlib.sha256).hexdigest()
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def get_cache_key(self) -> str:
@@ -72,7 +85,9 @@ class AIRequest:
             "max_tokens": self.max_tokens,
             "task_type": self.task_type.value
         }, sort_keys=True)
-        return hashlib.sha256(content.encode()).hexdigest()
+        # Use a keyed HMAC (with SHA-256) for cache keys to avoid use of a bare hash.
+        # This is not for password hashing; it prevents predictable cache keys.
+        return hmac.new(_CACHE_KEY_SECRET, content.encode(), hashlib.sha256).hexdigest()
 
 
 @dataclass
@@ -183,18 +198,42 @@ class AIProviderManager:
         provider_type: ProviderType,
         config: ProviderConfig
     ) -> AIProviderBase:
-        """Create provider instance based on type"""
+        """Create provider instance based on type.
+
+        Security: ensure that providers which require API keys are only created when
+        a non-empty, non-whitespace API key is provided to avoid accidentally
+        creating a functioning provider with an empty credential (which could
+        allow bypass of intended access restrictions).
+        """
+        # Providers that require an API key to operate
+        providers_requiring_key = {
+            ProviderType.OPENAI,
+            ProviderType.ANTHROPIC,
+            ProviderType.GOOGLE
+        }
+
+        if provider_type in providers_requiring_key:
+            if not config.api_key or not isinstance(config.api_key, str) or not config.api_key.strip():
+                # Explicitly fail instead of falling back to an empty string API key.
+                raise PermissionError(f"API key required for provider {provider_type.value}")
+
         if provider_type == ProviderType.OPENAI:
             return OpenAIProvider(
-                api_key=config.api_key or "",
+                api_key=config.api_key,
                 model=config.models[0] if config.models else "gpt-4"
             )
         elif provider_type == ProviderType.ANTHROPIC:
             return AnthropicProvider(
-                api_key=config.api_key or "",
+                api_key=config.api_key,
                 model=config.models[0] if config.models else "claude-3-5-sonnet-20240620"
             )
-        # Add other providers as needed
+        # Add other providers as needed; for providers that don't require keys, allow creation
+        elif provider_type == ProviderType.CUSTOM:
+            # Expect a factory callable in metadata to construct custom providers
+            factory = config.metadata.get("factory") if config.metadata else None
+            if callable(factory):
+                return factory(config)
+            raise ValueError("Custom provider requires a callable 'factory' in ProviderConfig.metadata")
         else:
             raise ValueError(f"Unsupported provider type: {provider_type}")
     
@@ -212,7 +251,7 @@ class AIProviderManager:
             Exception: If all providers fail
         """
         self.metrics["total_requests"] += 1
-        start_time = datetime.now()
+        start_time = datetime.now(timezone.utc)
         
         # Check cache
         if self.enable_caching and not request.stream:
@@ -241,7 +280,7 @@ class AIProviderManager:
             )
             
             # Calculate metrics
-            latency_ms = (datetime.now() - start_time).total_seconds() * 1000
+            latency_ms = (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
             response.latency_ms = latency_ms
             
             # Evaluate response quality
@@ -474,7 +513,7 @@ class AIProviderManager:
         
         if cache_key in self.cache:
             response, timestamp = self.cache[cache_key]
-            if datetime.now() - timestamp < self.cache_ttl:
+            if datetime.now(timezone.utc) - timestamp < self.cache_ttl:
                 response.cached = True
                 return response
             else:
@@ -486,7 +525,7 @@ class AIProviderManager:
     def _cache_response(self, request: AIRequest, response: AIResponse):
         """Cache response for future use"""
         cache_key = request.get_cache_key()
-        self.cache[cache_key] = (response, datetime.now())
+        self.cache[cache_key] = (response, datetime.now(timezone.utc))
         
         # Clean old cache entries periodically
         if len(self.cache) > 1000:
@@ -494,7 +533,7 @@ class AIProviderManager:
     
     def _clean_cache(self):
         """Remove expired cache entries"""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         expired_keys = [
             key for key, (_, timestamp) in self.cache.items()
             if now - timestamp >= self.cache_ttl

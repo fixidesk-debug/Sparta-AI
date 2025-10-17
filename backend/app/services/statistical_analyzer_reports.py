@@ -5,7 +5,7 @@ Provides plain English interpretations and comprehensive reports.
 """
 
 from typing import Dict, List, Any, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .statistical_analyzer import StatisticalTestResult, DescriptiveStats, AssumptionCheckResult
 from .statistical_analyzer_advanced import CorrelationResult, RegressionResult
@@ -455,7 +455,7 @@ class ReportGenerator:
             Markdown-formatted report
         """
         report = f"# Descriptive Statistics Report: {stats.variable_name}\n\n"
-        report += f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        report += f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         
         report += "## Summary\n\n"
         report += f"- **Sample Size:** {stats.n} observations"
@@ -536,7 +536,7 @@ class ReportGenerator:
             Markdown-formatted report
         """
         report = f"# Statistical Test Report: {result.test_name}\n\n"
-        report += f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        report += f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         
         report += "## Test Results\n\n"
         report += f"- **Test Statistic:** {result.statistic:.4f}\n"
@@ -624,7 +624,7 @@ class ReportGenerator:
             Markdown-formatted report
         """
         report = "# Correlation Analysis Report\n\n"
-        report += f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        report += f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         
         report += "## Variables\n\n"
         report += f"- **Variable 1:** {result.variable1}\n"
@@ -676,7 +676,7 @@ class ReportGenerator:
             Markdown-formatted report
         """
         report = f"# Regression Analysis Report: {result.model_type}\n\n"
-        report += f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        report += f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         
         report += "## Model Summary\n\n"
         report += f"- **Model Type:** {result.model_type}\n"

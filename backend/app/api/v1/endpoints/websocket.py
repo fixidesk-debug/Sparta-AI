@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 from typing import Dict, Optional
 import json
 import logging
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 
 from app.db.session import get_db
 from app.db.models import User, ChatSession, Query as QueryModel
@@ -24,13 +25,14 @@ class ConnectionManager:
     
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
-    
     async def connect(self, websocket: WebSocket, user_id: int):
         """Connect a new WebSocket client"""
         await websocket.accept()
-        connection_id = f"user_{user_id}_{datetime.utcnow().timestamp()}"
+        # Generate a random connection id to avoid exposing user-supplied identifiers
+        connection_id = uuid.uuid4().hex
         self.active_connections[connection_id] = websocket
         logger.info(f"WebSocket connected: {connection_id}")
+        return connection_id
         return connection_id
     
     def disconnect(self, connection_id: str):
@@ -306,15 +308,15 @@ async def websocket_endpoint(
         logger.warning(f"WebSocket authentication failed: {e.detail}")
         try:
             await websocket.close(code=1008, reason=e.detail)
-        except Exception:
-            pass
+        except Exception as close_err:
+            logger.warning(f"Failed to close websocket after HTTPException: {close_err}")
     
     except Exception as e:
         logger.error(f"WebSocket error: {e}", exc_info=True)
         try:
             await websocket.close(code=1011, reason="Internal server error")
-        except Exception:
-            pass
+        except Exception as close_err:
+            logger.warning(f"Failed to close websocket after internal error: {close_err}", exc_info=True)
     
     finally:
         # Clean up connection
@@ -471,6 +473,91 @@ async def handle_code_execution(
     # TODO: Integrate with code executor service
     logger.info(f"Code execution requested by {user_id}: {code[:50]}")
 
+    # Prepare streaming execution
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    from app.services.code_executor import CodeExecutor
+    from app.services.notebook_db import NotebookDB
+
+    loop = asyncio.get_event_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def stdout_collector_factory():
+        # collect writes into a list and put incremental chunks onto the asyncio queue
+        buffer: list[str] = []
+
+        def write(s: str):
+            try:
+                buffer.append(s)
+                # push to async queue
+                asyncio.run_coroutine_threadsafe(queue.put(s), loop)
+            except Exception:
+                pass
+
+        def getvalue():
+            return ''.join(buffer)
+
+        return write, getvalue
+
+    stdout_write, stdout_get = stdout_collector_factory()
+    stderr_write, stderr_get = stdout_collector_factory()
+
+    def run_code():
+        try:
+            executor = CodeExecutor(timeout_seconds=30, max_memory_mb=512)
+            # provide a db helper in context
+            context = {"db": NotebookDB(user_id=int(user_id))}
+            result = executor.execute(code, context=context, stdout_writer=stdout_write, stderr_writer=stderr_write)
+            return result
+        except Exception as e:
+            return {"success": False, "output": "", "error": str(e), "execution_time": 0.0, "images": [], "plotly_figures": [], "variables": {}, "timestamp": ""}
+
+    # Start background thread for execution
+    executor_pool = ThreadPoolExecutor(max_workers=1)
+    future = executor_pool.submit(run_code)
+
+    # send running status
+    await ws_manager.send_to_connection(connection_id, {
+        "type": MessageType.CODE_STATUS,
+        "data": {"status": "running", "execution_id": execution_id}
+    })
+
+    # Stream output as it becomes available
+    try:
+        while True:
+            try:
+                chunk = await asyncio.wait_for(queue.get(), timeout=0.5)
+                await ws_manager.send_to_connection(connection_id, {
+                    "type": MessageType.CODE_OUTPUT,
+                    "data": {"chunk": chunk, "execution_id": execution_id}
+                })
+            except asyncio.TimeoutError:
+                # check if finished
+                if future.done():
+                    break
+                continue
+
+        # Execution completed, get result
+        result = future.result()
+
+        # Send final complete message
+        await ws_manager.send_to_connection(connection_id, {
+            "type": MessageType.CODE_COMPLETE,
+            "data": {"result": result, "execution_id": execution_id}
+        })
+
+    except Exception as e:
+        logger.exception("Streaming execution failed: %s", e)
+        await ws_manager.send_to_connection(connection_id, {
+            "type": MessageType.CODE_ERROR,
+            "data": {"error": str(e), "execution_id": execution_id}
+        })
+    finally:
+        try:
+            executor_pool.shutdown(wait=False)
+        except Exception:
+            pass
+
 
 async def handle_file_upload_start(
     connection_id: str,
@@ -580,7 +667,7 @@ async def websocket_chat_endpoint(
             # Create new chat session
             chat_session = ChatSession(
                 user_id=user_id,
-                title=f"Chat {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
+                title=f"Chat {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}",
                 context={}
             )
             db.add(chat_session)
@@ -675,8 +762,12 @@ async def websocket_chat_endpoint(
                 "type": "error",
                 "message": str(e)
             })
-        except Exception:
-            pass
+        except WebSocketDisconnect:
+            # Client already disconnected; nothing to send back
+            logger.info("Client disconnected before error message could be sent")
+        except Exception as send_err:
+            # Log unexpected errors when trying to send the error message
+            logger.exception(f"Failed to send error message to websocket: {send_err}")
     except Exception as e:
         logger.exception(f"WebSocket error: {e}")
     finally:

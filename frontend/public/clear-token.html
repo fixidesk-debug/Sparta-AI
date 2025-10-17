@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Clear Token</title>
+</head>
+<body>
+    <h1>Clearing old token...</h1>
+    <script>
+        localStorage.removeItem('token');
+        localStorage.clear();
+        alert('Token cleared! Now login again.');
+        window.location.href = '/auth/login';
+    </script>
+</body>
+</html>

@@ -3,7 +3,7 @@ Conversation Memory Management
 Manages conversation history for multi-turn interactions
 """
 from typing import List, Dict, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import deque
 import logging
 import json
@@ -33,7 +33,7 @@ class Message:
         self.role = role
         self.content = content
         self.metadata = metadata or {}
-        self.timestamp = timestamp or datetime.utcnow()
+        self.timestamp = timestamp or datetime.now(timezone.utc)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert message to dictionary"""
@@ -126,8 +126,11 @@ class ConversationMemory:
             content: Message content
             metadata: Optional metadata
         """
+        # Prevent unauthorized callers from setting the system-level message via this general API.
+        # System messages must be set explicitly via set_system_message(...) to avoid privilege escalation.
         if role == 'system':
-            self.set_system_message(content)
+            self.logger.warning("Attempt to set system message via add_message() blocked")
+            raise PermissionError("Direct setting of 'system' messages is not allowed; use set_system_message()")
         else:
             message = Message(role=role, content=content, metadata=metadata)
             self.messages.append(message)
@@ -397,7 +400,7 @@ class ConversationMemoryManager:
         Args:
             inactive_threshold: Seconds of inactivity before cleanup
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         to_remove = []
         
         for session_id, memory in self.memories.items():

@@ -75,7 +75,10 @@ async def ask_query(
         # Process the natural language query
         user_id: int = current_user.id  # type: ignore
         
-        logger.info(f"Processing query for user {user_id}: {query.query_text[:50]}...")
+        # Sanitize user-controlled input for logging to prevent log injection (escape CR/LF and tabs)
+        snippet = (query.query_text or "")[:50]
+        safe_snippet = snippet.replace("\n", "\\n").replace("\r", "\\r").replace("\t", " ")
+        logger.info("Processing query for user %s: %s...", user_id, safe_snippet)
         
         result = await process_natural_language_query(
             query.query_text,

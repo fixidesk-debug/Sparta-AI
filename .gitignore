@@ -1,4 +1,33 @@
+# ============================================
+# SPARTA AI - Comprehensive Git Ignore
+# ============================================
+
+# ============================================
+# Environment Variables & Secrets (CRITICAL!)
+# ============================================
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+*.env
+**/.env
+backend/.env
+frontend/.env
+
+# API Keys and Secrets
+**/secrets/
+**/credentials/
+*.pem
+*.key
+*.cert
+*.crt
+service-account*.json
+credentials.json
+
+# ============================================
 # Python
+# ============================================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -10,41 +39,207 @@ ENV/
 .venv
 *.egg-info/
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.cover
+.hypothesis/
+.tox/
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Node
+# ============================================
+# Node.js / Frontend
+# ============================================
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
 build/
 dist/
+.next/
+out/
+.cache/
+.parcel-cache/
+.nuxt/
+.vuepress/dist
+.serverless/
 
-# Environment
-.env
-.env.local
-.env.*.local
-
-# IDE
+# ============================================
+# IDE & Editors
+# ============================================
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+.history/
 
-# OS
+# ============================================
+# Operating System
+# ============================================
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
+desktop.ini
 
-# Uploads
+# ============================================
+# Data Files & Uploads
+# ============================================
 uploads/
+temp/
+tmp/
+backend/uploads/
+backend/temp/
+backend/data/*.csv
+backend/data/*.xlsx
+backend/data/*.json
 *.csv
 *.xlsx
-*.json
+*.xls
 
-# Database
+# Exclude example files
+!*example*.csv
+!*sample*.csv
+
+# ============================================
+# Database Files
+# ============================================
 *.db
 *.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+sparta.db
+test.db
 
-# Logs
+# ============================================
+# Machine Learning Models
+# ============================================
+models/ml/*.joblib
+models/ml/*.pkl
+models/ml/*.h5
+models/ml/*.pt
+models/ml/*.pth
+backend/models/ml/*.joblib
+backend/models/ml/*.pkl
+
+# Keep metadata files
+!models/ml/*.meta
+!backend/models/ml/*.meta
+
+# ============================================
+# Logs & Debug
+# ============================================
 *.log
 logs/
+*.log.*
+backend/logs/
+frontend/logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ============================================
+# Generated Images & Charts
+# ============================================
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+
+# Keep static assets
+!frontend/public/**/*.png
+!frontend/public/**/*.jpg
+!frontend/public/**/*.svg
+!frontend/src/assets/**/*
+!**/logo*.png
+!**/icon*.png
+
+# ============================================
+# Test Coverage & Reports
+# ============================================
+coverage/
+.nyc_output/
+*.lcov
+test-results/
+playwright-report/
+e2e-results/
+
+# ============================================
+# Build Artifacts
+# ============================================
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+
+# ============================================
+# Documentation (Keep most, ignore temp)
+# ============================================
+*.tmp
+*.temp
+~$*.docx
+~$*.xlsx
+
+# ============================================
+# Docker
+# ============================================
+.dockerignore
+docker-compose.override.yml
+
+# ============================================
+# Terraform & Infrastructure
+# ============================================
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+terraform.tfvars
+*.tfvars
+
+# ============================================
+# Jupyter Notebooks
+# ============================================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ============================================
+# Package Managers
+# ============================================
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+Pipfile.lock
+
+# ============================================
+# Misc
+# ============================================
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+.sass-cache/
+*.css.map
+*.js.map

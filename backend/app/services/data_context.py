@@ -8,7 +8,7 @@ from typing import Dict, Optional, Any
 from pathlib import Path
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,22 @@ class DataContext:
             file_path: Path to the data file
             filename: Original filename
         """
-        self.file_path = Path(file_path)
+        # Validate file path to prevent path traversal
+        base_dir = Path("uploads").resolve()
+        p = Path(file_path)
+        try:
+            if p.is_absolute():
+                # Resolve an absolute path and ensure it is inside uploads
+                file_path_obj = p.resolve()
+            else:
+                # Treat relative paths as relative to the uploads directory
+                file_path_obj = (base_dir / p).resolve()
+            # Ensure the resolved path is inside the uploads directory
+            file_path_obj.relative_to(base_dir)
+        except Exception:
+            raise ValueError("Access denied: Path outside allowed directory")
+        
+        self.file_path = file_path_obj
         self.filename = filename
         self.df: Optional[pd.DataFrame] = None
         self.metadata: Dict[str, Any] = {}
@@ -75,7 +90,7 @@ class DataContext:
                 'column_names': self.df.columns.tolist(),
                 'dtypes': {col: str(dtype) for col, dtype in self.df.dtypes.items()},
                 'memory_usage_mb': self.df.memory_usage(deep=True).sum() / 1024 / 1024,
-                'loaded_at': datetime.utcnow().isoformat()
+                'loaded_at': datetime.now(timezone.utc).isoformat()
             }
             
             # Missing values

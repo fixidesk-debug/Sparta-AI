@@ -326,39 +326,55 @@ class DataProfiler:
         
         Args:
             series: Numeric Series
-            method: Detection method ('zscore', 'iqr', 'isolation_forest')
+            method: Detection method ('zscore', 'iqr')
             
         Returns:
             Dictionary with outlier information
         """
-        clean_series = series.dropna()
+        # Only allow a small, explicit set of methods to avoid unexpected behavior.
+        allowed_methods = {'zscore', 'iqr'}
+        if method not in allowed_methods:
+            return {'error': f'Unknown method: {method}'}
         
-        if len(clean_series) == 0 or not pd.api.types.is_numeric_dtype(clean_series):
+        # Coerce input to numeric to avoid object-dtype surprises and ensure consistent checks.
+        numeric_series = pd.to_numeric(series, errors='coerce')
+        clean_series = numeric_series.dropna()
+        
+        if len(clean_series) == 0:
             return {'error': 'No valid numeric data'}
         
         try:
             if method == 'zscore':
-                z_scores = np.abs(stats.zscore(clean_series))
-                outliers = z_scores > self.OUTLIER_Z_SCORE
+                # Use scipy.stats.zscore with nan handling and ensure array-like mask
+                z_scores = np.abs(stats.zscore(clean_series, nan_policy='omit'))
+                outliers_mask = np.asarray(z_scores) > self.OUTLIER_Z_SCORE
             elif method == 'iqr':
                 Q1 = clean_series.quantile(0.25)
                 Q3 = clean_series.quantile(0.75)
                 IQR = Q3 - Q1
-                outliers = (clean_series < (Q1 - 1.5 * IQR)) | (clean_series > (Q3 + 1.5 * IQR))
+                # If IQR is zero or NaN, avoid marking everything as outlier
+                if pd.isna(IQR) or IQR == 0:
+                    outliers_mask = np.zeros(len(clean_series), dtype=bool)
+                else:
+                    outliers_mask = (clean_series < (Q1 - 1.5 * IQR)) | (clean_series > (Q3 + 1.5 * IQR))
             else:
+                # Should not reach here due to earlier validation, but keep safe fallback.
                 return {'error': f'Unknown method: {method}'}
-        except (TypeError, ValueError):
+        except Exception:
+            logger.exception("Error while computing outliers")
             return {'error': 'Cannot compute outliers for this data type'}
         
-        outlier_values = clean_series[outliers]
+        outlier_values = clean_series[outliers_mask]
+        outlier_count = int(outlier_values.shape[0])
+        percent = float((outlier_count / len(clean_series)) * 100) if len(clean_series) > 0 else 0.0
         
         return {
             'method': method,
-            'count': int(outliers.sum()),
-            'percent': float((outliers.sum() / len(clean_series)) * 100),
+            'count': outlier_count,
+            'percent': percent,
             'indices': outlier_values.index.tolist()[:100],  # Limit to first 100
             'values': outlier_values.values.tolist()[:100],
-            'has_outliers': bool(outliers.any()),
+            'has_outliers': bool(outlier_count > 0),
         }
     
     def analyze_correlations(self, df: pd.DataFrame) -> Dict[str, Any]:

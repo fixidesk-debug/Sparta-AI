@@ -34,6 +34,8 @@ class CodeExecutionResponse(BaseModel):
     plotly_figures: List[Dict[str, Any]] = Field(default_factory=list, description="Plotly figure data")
     variables: Dict[str, Any] = Field(default_factory=dict, description="Output variables")
     timestamp: str = Field(..., description="Execution timestamp")
+    code: Optional[str] = Field(None, description="Executed code")
+    data_preview: Optional[Dict[str, Any]] = Field(None, description="Preview of the dataset")
 
 
 class CodeValidationRequest(BaseModel):
@@ -89,7 +91,18 @@ async def execute_code_endpoint(
     try:
         user_id: int = current_user.id  # type: ignore
         
-        logger.info(f"Executing code for user {user_id}, file_id={execution_request.file_id}")
+        def _sanitize_log(value: Any) -> str:
+            """Sanitize a value for safe logging by escaping control characters."""
+            if value is None:
+                return ""
+            s = str(value)
+            # Escape newlines, carriage returns, tabs and null bytes to prevent log injection
+            return s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t").replace("\x00", "\\x00")
+        
+        safe_user = _sanitize_log(user_id)
+        safe_file_id = _sanitize_log(execution_request.file_id)
+        
+        logger.info("Executing code for user %s, file_id=%s", safe_user, safe_file_id)
         
         # Prepare execution context
         context: Dict[str, Any] = {}
@@ -129,6 +142,19 @@ async def execute_code_endpoint(
             code=execution_request.code,
             context=context
         )
+        
+        # Add code to result
+        result['code'] = execution_request.code
+        
+        # Add data preview if dataframe was loaded
+        if 'df' in context:
+            df = context['df']
+            result['data_preview'] = {
+                'shape': df.shape,
+                'columns': list(df.columns),
+                'head': df.head(10).to_dict(orient='records'),
+                'dtypes': df.dtypes.astype(str).to_dict()
+            }
         
         # Update query execution status if query_id provided
         if execution_request.query_id:

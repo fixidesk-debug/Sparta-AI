@@ -76,65 +76,108 @@ class DataCleaner:
         Returns:
             DataFrame with handled missing values
         """
+        # Validate input types and basic invariants early to avoid bypasses
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError("df must be a pandas DataFrame")
+        allowed_strategies = {'auto', 'drop', 'mean', 'median', 'mode', 'forward', 'backward', 'constant', 'knn'}
+        if strategy not in allowed_strategies:
+            raise ValueError(f"Unknown strategy: {strategy}")
+
         df_clean = df.copy()
-        
+
+        # Determine target columns and validate existence to avoid unexpected behavior
         if columns is None:
-            columns = df.columns.tolist()
-        
+            columns = df_clean.columns.tolist()
+        else:
+            # Keep only columns that actually exist and warn about missing ones
+            valid_columns = [c for c in columns if c in df_clean.columns]
+            missing_columns = [c for c in columns if c not in df_clean.columns]
+            if missing_columns:
+                logger.warning(f"Requested columns not found and will be skipped: {missing_columns}")
+            columns = valid_columns
+
+        # Small helper functions reduce per-function branching and keep logic testable
+        def _fill_statistic(col: str, stat: str) -> None:
+            if not df_clean[col].isna().any():
+                return
+            if stat == 'mean' and pd.api.types.is_numeric_dtype(df_clean[col]):
+                value = df_clean[col].mean()
+            elif stat == 'median' and pd.api.types.is_numeric_dtype(df_clean[col]):
+                value = df_clean[col].median()
+            elif stat == 'mode':
+                mode_vals = df_clean[col].mode()
+                value = mode_vals[0] if len(mode_vals) > 0 else None
+            else:
+                # Nothing to do for non-applicable types
+                return
+            if value is not None:
+                df_clean.loc[:, col] = df_clean[col].fillna(value)
+
+        def _fill_forward_backward(cols: List[str], method: str) -> None:
+            if not cols:
+                return
+            if method == 'forward':
+                df_clean.loc[:, cols] = df_clean[cols].ffill()
+            else:
+                df_clean.loc[:, cols] = df_clean[cols].bfill()
+
+        def _fill_constant(cols: List[str], value: Any) -> None:
+            if value is None:
+                logger.warning("fill_value is None for 'constant' strategy; defaulting to 0")
+                value_to_use = 0
+            else:
+                value_to_use = value
+            if cols:
+                df_clean.loc[:, cols] = df_clean[cols].fillna(value_to_use)
+
+        def _knn_impute(numeric_cols: List[str]) -> None:
+            if not numeric_cols:
+                return
+            imputer = KNNImputer(n_neighbors=5)
+            # KNNImputer returns numpy array; preserve column order
+            try:
+                imputed = imputer.fit_transform(df_clean[numeric_cols])
+                df_clean.loc[:, numeric_cols] = imputed
+            except Exception as e:
+                logger.error(f"KNN imputation failed: {e}")
+                raise
+
+        # Strategy dispatch to keep branching shallow in this function
         if strategy == 'drop':
             initial_rows = len(df_clean)
             df_clean = df_clean.dropna(subset=columns)
             logger.info(f"Dropped {initial_rows - len(df_clean)} rows with missing values")
-        
+
         elif strategy == 'auto':
-            # Automatic strategy based on data type
+            # Per-column automatic policy
             for col in columns:
-                if df_clean[col].isna().any():
-                    if pd.api.types.is_numeric_dtype(df_clean[col]):
-                        # Use median for numeric
-                        df_clean[col] = df_clean[col].fillna(df_clean[col].median())
-                    elif pd.api.types.is_datetime64_any_dtype(df_clean[col]):
-                        # Forward fill for datetime
-                        df_clean[col] = df_clean[col].ffill()
-                    else:
-                        # Use mode for categorical
-                        mode_value = df_clean[col].mode()
-                        if len(mode_value) > 0:
-                            df_clean[col] = df_clean[col].fillna(mode_value[0])
-        
-        elif strategy in ['mean', 'median', 'mode']:
+                if not df_clean[col].isna().any():
+                    continue
+                if pd.api.types.is_numeric_dtype(df_clean[col]):
+                    # Prefer median for robustness
+                    _fill_statistic(col, 'median')
+                elif pd.api.types.is_datetime64_any_dtype(df_clean[col]):
+                    # Forward-fill datetimes
+                    _fill_forward_backward([col], 'forward')
+                else:
+                    # Categorical/text -> mode
+                    _fill_statistic(col, 'mode')
+
+        elif strategy in {'mean', 'median', 'mode'}:
             for col in columns:
-                if df_clean[col].isna().any():
-                    if strategy == 'mean' and pd.api.types.is_numeric_dtype(df_clean[col]):
-                        df_clean[col] = df_clean[col].fillna(df_clean[col].mean())
-                    elif strategy == 'median' and pd.api.types.is_numeric_dtype(df_clean[col]):
-                        df_clean[col] = df_clean[col].fillna(df_clean[col].median())
-                    elif strategy == 'mode':
-                        mode_value = df_clean[col].mode()
-                        if len(mode_value) > 0:
-                            df_clean[col] = df_clean[col].fillna(mode_value[0])
-        
-        elif strategy == 'forward':
-            df_clean[columns] = df_clean[columns].ffill()
-        
-        elif strategy == 'backward':
-            df_clean[columns] = df_clean[columns].bfill()
-        
+                _fill_statistic(col, strategy)
+
+        elif strategy in {'forward', 'backward'}:
+            _fill_forward_backward(columns, strategy)
+
         elif strategy == 'constant':
-            if fill_value is None:
-                fill_value = 0
-            df_clean[columns] = df_clean[columns].fillna(fill_value)
-        
+            _fill_constant(columns, fill_value)
+
         elif strategy == 'knn':
-            # KNN imputation for numeric columns
             numeric_cols = [col for col in columns if pd.api.types.is_numeric_dtype(df_clean[col])]
-            if numeric_cols:
-                imputer = KNNImputer(n_neighbors=5)
-                df_clean[numeric_cols] = imputer.fit_transform(df_clean[numeric_cols])
-        
-        else:
-            raise ValueError(f"Unknown strategy: {strategy}")
-        
+            _knn_impute(numeric_cols)
+
+        # Return cleaned copy (explicit, no in-place surprises)
         return df_clean
     
     def remove_duplicates(
@@ -196,7 +239,8 @@ class DataCleaner:
         if columns is None:
             columns = df_clean.select_dtypes(include=[np.number]).columns.tolist()
         
-        mask = pd.Series([True] * len(df_clean), index=df_clean.index)
+        # Ensure mask is a boolean Series indexed to df_clean
+        mask = pd.Series(True, index=df_clean.index, dtype=bool)
         
         for col in columns:
             if not pd.api.types.is_numeric_dtype(df_clean[col]):
@@ -208,15 +252,24 @@ class DataCleaner:
                 Q1 = clean_col.quantile(0.25)
                 Q3 = clean_col.quantile(0.75)
                 IQR = Q3 - Q1
+                # If IQR is zero there is no spread; skip this column
+                if IQR == 0 or np.isclose(IQR, 0.0):
+                    continue
                 lower_bound = Q1 - threshold * IQR
                 upper_bound = Q3 + threshold * IQR
-                mask &= (df_clean[col] >= lower_bound) & (df_clean[col] <= upper_bound) | df_clean[col].isna()
+                # Use explicit parentheses to avoid precedence mistakes and ensure correct boolean logic
+                condition = ((df_clean[col] >= lower_bound) & (df_clean[col] <= upper_bound)) | (df_clean[col].isna())
+                mask &= condition
             
             elif method == 'zscore':
                 mean = clean_col.mean()
                 std = clean_col.std()
+                # Guard against zero std to avoid division by zero and unintended masking
+                if std == 0 or np.isclose(std, 0.0):
+                    continue
                 z_scores = np.abs((df_clean[col] - mean) / std)
-                mask &= (z_scores <= threshold) | df_clean[col].isna()
+                condition = (z_scores <= threshold) | (df_clean[col].isna())
+                mask &= condition
         
         initial_rows = len(df_clean)
         df_clean = df_clean[mask]
@@ -246,29 +299,66 @@ class DataCleaner:
         Returns:
             DataFrame with capped outliers
         """
+        # Basic validation to avoid unexpected bypasses or misuse
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError("df must be a pandas DataFrame")
+        allowed_methods = {'iqr', 'percentile'}
+        if method not in allowed_methods:
+            raise ValueError(f"Unknown method: {method}. Allowed: {sorted(allowed_methods)}")
+        if not isinstance(threshold, (int, float)) or threshold < 0:
+            raise ValueError("threshold must be a non-negative number")
+        
         df_clean = df.copy()
         
+        # Determine numeric columns (and validate requested columns)
         if columns is None:
             columns = df_clean.select_dtypes(include=[np.number]).columns.tolist()
+        else:
+            # Keep only columns that exist and are numeric; warn about others
+            valid_columns = [c for c in columns if c in df_clean.columns and pd.api.types.is_numeric_dtype(df_clean[c])]
+            missing_columns = [c for c in columns if c not in df_clean.columns]
+            non_numeric = [c for c in columns if c in df_clean.columns and not pd.api.types.is_numeric_dtype(df_clean[c])]
+            if missing_columns:
+                logger.warning(f"Requested columns not found and will be skipped: {missing_columns}")
+            if non_numeric:
+                logger.warning(f"Requested non-numeric columns will be skipped: {non_numeric}")
+            columns = valid_columns
+        
+        if not columns:
+            logger.info("No numeric columns to cap; returning original DataFrame")
+            return df_clean
         
         for col in columns:
-            if not pd.api.types.is_numeric_dtype(df_clean[col]):
+            # Use dropna for robust quantile/std computation
+            non_na = df_clean[col].dropna()
+            if non_na.empty:
+                # Nothing to cap in an all-NA column
                 continue
             
             if method == 'iqr':
-                Q1 = df_clean[col].quantile(0.25)
-                Q3 = df_clean[col].quantile(0.75)
+                Q1 = non_na.quantile(0.25)
+                Q3 = non_na.quantile(0.75)
                 IQR = Q3 - Q1
+                # If IQR is zero there is no variability; skip capping for this column
+                if IQR == 0 or np.isclose(IQR, 0.0):
+                    logger.debug(f"Skipping IQR capping for column '{col}' due to zero IQR")
+                    continue
                 lower_bound = Q1 - threshold * IQR
                 upper_bound = Q3 + threshold * IQR
             elif method == 'percentile':
-                lower_bound = df_clean[col].quantile(0.01)
-                upper_bound = df_clean[col].quantile(0.99)
+                # Use robust percentiles computed on non-NA values
+                lower_bound = non_na.quantile(0.01)
+                upper_bound = non_na.quantile(0.99)
+                # If bounds are NaN or equal, skip
+                if pd.isna(lower_bound) or pd.isna(upper_bound) or np.isclose(lower_bound, upper_bound):
+                    logger.debug(f"Skipping percentile capping for column '{col}' due to invalid bounds")
+                    continue
             else:
+                # This branch should not be reached due to earlier validation
                 continue
             
-            # Cap values
-            df_clean[col] = df_clean[col].clip(lower=lower_bound, upper=upper_bound)
+            # Cap values while preserving NaNs
+            df_clean[col] = df_clean[col].where(df_clean[col].isna(), df_clean[col].clip(lower=lower_bound, upper=upper_bound))
         
         logger.info(f"Capped outliers in {len(columns)} columns")
         
@@ -294,11 +384,32 @@ class DataCleaner:
         Returns:
             DataFrame with normalized columns
         """
+        # Basic validation
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError("df must be a pandas DataFrame")
+        if not isinstance(method, str):
+            raise TypeError("method must be a string")
+
         df_clean = df.copy()
-        
+
+        # Determine numeric columns (and validate requested columns)
         if columns is None:
             columns = df_clean.select_dtypes(include=[np.number]).columns.tolist()
-        
+        else:
+            # Keep only existing numeric columns and warn about others
+            valid_columns = [c for c in columns if c in df_clean.columns and pd.api.types.is_numeric_dtype(df_clean[c])]
+            missing_columns = [c for c in columns if c not in df_clean.columns]
+            non_numeric = [c for c in columns if c in df_clean.columns and not pd.api.types.is_numeric_dtype(df_clean[c])]
+            if missing_columns:
+                logger.warning(f"Requested columns not found and will be skipped: {missing_columns}")
+            if non_numeric:
+                logger.warning(f"Requested non-numeric columns will be skipped: {non_numeric}")
+            columns = valid_columns
+
+        if not columns:
+            logger.info("No numeric columns to normalize; returning original DataFrame")
+            return df_clean
+
         # Select scaler
         if method == 'standard':
             scaler = StandardScaler()
@@ -308,14 +419,20 @@ class DataCleaner:
             scaler = RobustScaler()
         else:
             raise ValueError(f"Unknown normalization method: {method}")
-        
-        # Fit and transform
-        df_clean[columns] = scaler.fit_transform(df_clean[columns])
-        
-        # Store scaler for later use
-        for col in columns:
-            self.scalers[col] = scaler
-        
+
+        # Fit and transform with error handling; ensure we operate on a copy
+        try:
+            scaled_values = scaler.fit_transform(df_clean[columns])
+            # Preserve column alignment and types
+            df_clean.loc[:, columns] = scaled_values
+        except Exception as e:
+            logger.error(f"Normalization failed for columns {columns} with method '{method}': {e}")
+            raise
+
+        # Store scaler keyed by the tuple of columns to avoid incorrectly re-using a single scaler per-column
+        key = tuple(columns)
+        self.scalers[key] = scaler
+
         logger.info(f"Normalized {len(columns)} columns using {method} scaling")
         
         return df_clean
@@ -421,7 +538,8 @@ class DataCleaner:
         self,
         df: pd.DataFrame,
         columns: Optional[List[str]] = None,
-        method: str = 'onehot'
+        method: str = 'onehot',
+        target_column: Optional[str] = None
     ) -> pd.DataFrame:
         """
         Encode categorical variables.
@@ -432,28 +550,87 @@ class DataCleaner:
             method: Encoding method:
                 - 'onehot': One-hot encoding
                 - 'label': Label encoding (ordinal)
-                - 'target': Target encoding (requires target column)
+                - 'target': Target encoding (requires target_column)
+            target_column: Required when method == 'target' to compute target statistics
             
         Returns:
             DataFrame with encoded categories
         """
+        # Validate inputs early to avoid unintended modifications or information leaks
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError("df must be a pandas DataFrame")
+        if not isinstance(method, str):
+            raise TypeError("method must be a string")
+
+        allowed_methods = {'onehot', 'label', 'target'}
+        if method not in allowed_methods:
+            raise ValueError(f"Unknown encoding method: {method}. Allowed: {sorted(allowed_methods)}")
+
         df_clean = df.copy()
-        
+
+        # Default to object/category columns if none specified
         if columns is None:
             columns = df_clean.select_dtypes(include=['object', 'category']).columns.tolist()
-        
+        else:
+            # Keep only columns that actually exist to avoid encoding unintended data
+            valid_columns = [c for c in columns if c in df_clean.columns]
+            missing_columns = [c for c in columns if c not in df_clean.columns]
+            if missing_columns:
+                logger.warning(f"Requested columns not found and will be skipped: {missing_columns}")
+            columns = valid_columns
+
+        # For target encoding, require a valid target column and exclude it from encoding set
+        if method == 'target':
+            if not target_column:
+                raise ValueError("target_column must be provided for 'target' encoding")
+            if target_column not in df_clean.columns:
+                raise ValueError(f"Specified target_column '{target_column}' not found in DataFrame")
+            # Ensure we do not accidentally encode the target column itself
+            if target_column in columns:
+                columns = [c for c in columns if c != target_column]
+                logger.debug(f"Excluded target column '{target_column}' from encoding columns")
+
+        # Nothing to do if no valid columns remain
+        if not columns:
+            logger.info("No categorical columns to encode; returning original DataFrame")
+            return df_clean
+
         if method == 'onehot':
-            df_clean = pd.get_dummies(df_clean, columns=columns, prefix=columns)
-            logger.info(f"One-hot encoded {len(columns)} columns")
-        
+            # Use get_dummies safely on the explicit column list
+            try:
+                df_clean = pd.get_dummies(df_clean, columns=columns, prefix=columns, drop_first=False, dummy_na=False)
+                logger.info(f"One-hot encoded {len(columns)} columns")
+            except Exception as e:
+                logger.error(f"One-hot encoding failed for columns {columns}: {e}")
+                raise
+
         elif method == 'label':
             for col in columns:
-                df_clean[col] = df_clean[col].astype('category').cat.codes
+                try:
+                    # Preserve NaNs as -1 by using categorical codes
+                    df_clean[col] = df_clean[col].astype('category').cat.codes
+                except Exception as e:
+                    logger.error(f"Label encoding failed for column '{col}': {e}")
+                    raise
             logger.info(f"Label encoded {len(columns)} columns")
-        
-        else:
-            raise ValueError(f"Unknown encoding method: {method}")
-        
+
+        elif method == 'target':
+            # Simple target encoding: replace category by mean(target) for that category.
+            # Use a new column to avoid overwriting original category unless explicitly desired.
+            for col in columns:
+                try:
+                    # Compute mapping on training data (here, the provided df)
+                    mapping = df_clean.groupby(col)[target_column].mean()
+                    # Map values; preserve NaNs
+                    encoded_col = df_clean[col].map(mapping)
+                    # Create a new column name to make operation explicit and avoid accidental overwrites
+                    new_col_name = f"{col}_te"
+                    df_clean[new_col_name] = encoded_col
+                except Exception as e:
+                    logger.error(f"Target encoding failed for column '{col}': {e}")
+                    raise
+            logger.info(f"Target encoded {len(columns)} columns using target '{target_column}'")
+
         return df_clean
     
     def handle_imbalanced_data(
@@ -475,38 +652,75 @@ class DataCleaner:
         Returns:
             Balanced DataFrame
         """
+        # Basic validation to prevent accidental bypasses or KeyError/unauthorized access
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError("df must be a pandas DataFrame")
+        if not isinstance(target_column, str):
+            raise TypeError("target_column must be a string")
+        if target_column not in df.columns:
+            raise ValueError(f"target_column '{target_column}' not found in DataFrame")
+        allowed_methods = {'oversample', 'undersample'}
+        if method not in allowed_methods:
+            raise ValueError(f"Unknown balancing method: {method}. Allowed: {sorted(allowed_methods)}")
+
         df_clean = df.copy()
-        
-        # Get class counts
+
+        # Ensure target column has meaningful values (no silent handling of all-NA targets)
+        if df_clean[target_column].isna().all():
+            raise ValueError(f"target_column '{target_column}' contains only missing values; please provide a valid target.")
+
+        # Compute class counts explicitly and exclude rows with NA target to avoid ambiguous behavior
+        if df_clean[target_column].isna().any():
+            logger.warning(f"Rows with missing values in target_column '{target_column}' will be excluded from balancing")
+            df_clean = df_clean[df_clean[target_column].notna()]
+
+        # Get class counts (use value_counts on the cleaned target)
         class_counts = df_clean[target_column].value_counts()
-        
+
+        if len(class_counts) <= 1:
+            # Nothing meaningful to balance if only one class remains
+            logger.info("Target has a single class after preprocessing; returning original DataFrame")
+            return df_clean
+
         if method == 'oversample':
             # Oversample minority classes to match majority
-            max_size = class_counts.max()
+            max_size = int(class_counts.max())
             balanced_dfs = []
-            
+
             for class_label in class_counts.index:
                 class_df = df_clean[df_clean[target_column] == class_label]
+                # If class_df is empty (defensive), skip
+                if class_df.empty:
+                    logger.debug(f"Skipping empty class '{class_label}' during oversampling")
+                    continue
                 balanced_dfs.append(class_df.sample(max_size, replace=True, random_state=42))
-            
+
+            if not balanced_dfs:
+                logger.info("No classes available to oversample; returning original DataFrame")
+                return df_clean
+
             df_clean = pd.concat(balanced_dfs, ignore_index=True)
-        
+
         elif method == 'undersample':
             # Undersample majority classes to match minority
-            min_size = class_counts.min()
+            min_size = int(class_counts.min())
             balanced_dfs = []
-            
+
             for class_label in class_counts.index:
                 class_df = df_clean[df_clean[target_column] == class_label]
-                balanced_dfs.append(class_df.sample(min_size, random_state=42))
-            
+                if class_df.empty:
+                    logger.debug(f"Skipping empty class '{class_label}' during undersampling")
+                    continue
+                balanced_dfs.append(class_df.sample(min_size, replace=False, random_state=42))
+
+            if not balanced_dfs:
+                logger.info("No classes available to undersample; returning original DataFrame")
+                return df_clean
+
             df_clean = pd.concat(balanced_dfs, ignore_index=True)
-        
-        else:
-            raise ValueError(f"Unknown balancing method: {method}")
-        
+
         logger.info(f"Balanced dataset using {method}: {len(df)} → {len(df_clean)} rows")
-        
+
         return df_clean
     
     def auto_clean(

@@ -39,18 +39,22 @@ class Settings(BaseSettings):
     ALLOWED_EXTENSIONS: list = [".csv", ".xlsx", ".xls", ".json"]
     UPLOAD_DIR: str = "uploads"
     
-    # OpenAI
+    # Groq AI (Primary)
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    
+    # OpenAI (Optional)
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4"
     OPENAI_MAX_TOKENS: int = 2000
     OPENAI_TEMPERATURE: float = 0.7
     
-    # Anthropic (optional)
+    # Anthropic (Optional)
     ANTHROPIC_API_KEY: Optional[str] = None
     ANTHROPIC_MODEL: str = "claude-3-opus-20240229"
     
     # AI Code Generation
-    DEFAULT_AI_PROVIDER: str = "openai"  # "openai" or "anthropic"
+    DEFAULT_AI_PROVIDER: str = "groq"  # "groq", "openai", or "anthropic"
     CODE_GENERATION_TEMPERATURE: float = 0.3  # Lower for more deterministic code
     CODE_GENERATION_MAX_TOKENS: int = 2000
     
@@ -79,6 +83,7 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = True
+        extra = "allow"
 
 
 # Initialize settings

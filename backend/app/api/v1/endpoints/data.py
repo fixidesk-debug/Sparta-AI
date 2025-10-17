@@ -50,6 +50,33 @@ file_validator = FileValidator()
 metadata_extractor = MetadataExtractor()
 recommendation_engine = RecommendationEngine()
 
+def process_uploaded_file(tmp_path):
+    """
+    Process an uploaded temporary file and return a tuple:
+    (validation, metadata, insights, dataframe)
+    This helper groups the related service calls to reduce coupling in endpoint handlers.
+    """
+    try:
+        # Validate file (path-based validation)
+        validation = file_validator.validate_file(tmp_path)
+        # Load file (service is expected to handle streaming/efficient reads)
+        df = data_processor.load_file(tmp_path)
+        # Validate DataFrame
+        df_validation = file_validator.validate_dataframe(df)
+        validation['dataframe'] = df_validation
+        # Extract metadata
+        metadata = metadata_extractor.extract_metadata(df, tmp_path)
+        # Get quick insights
+        insights = recommendation_engine.get_quick_insights(df)
+        return validation, metadata, insights, df
+    except DataProcessingError:
+        # propagate domain-specific errors
+        raise
+    except Exception as e:
+        logger.error(f"Error processing uploaded file: {e}")
+        # wrap unexpected errors in a domain error for consistent handling
+        raise DataProcessingError(str(e))
+
 # File upload security configuration
 ALLOWED_EXTENSIONS = {'.csv', '.xlsx', '.xls', '.json', '.parquet', '.tsv', '.txt'}
 MAX_FILE_SIZE = int(os.getenv('MAX_UPLOAD_SIZE_MB', '100')) * 1024 * 1024
@@ -59,11 +86,24 @@ def validate_upload(file: UploadFile) -> None:
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
     
+    # Validate extension
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
             detail=f"File type {ext} not allowed. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+    
+    # Validate content type
+    allowed_content_types = {
+        'text/csv', 'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/json', 'application/octet-stream', 'text/plain'
+    }
+    if file.content_type and file.content_type not in allowed_content_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Content type {file.content_type} not allowed"
         )
     
     if file.size and file.size > MAX_FILE_SIZE:
@@ -72,77 +112,103 @@ def validate_upload(file: UploadFile) -> None:
             detail=f"File too large. Max size: {MAX_FILE_SIZE // (1024*1024)}MB"
         )
 
+async def safe_save_upload(file: UploadFile) -> str:
+    """
+    Save an UploadFile to a temporary file safely:
+    - stream the file in chunks to avoid memory spikes
+    - enforce MAX_FILE_SIZE
+    - sanitize suffix (use allowed extensions only)
+    - perform basic magic-byte checks for binary formats
+    Returns the path to the temporary file (caller is responsible for cleanup).
+    """
+    import tempfile
 
-@router.post("/upload")
-async def upload_file(
-    file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Upload and validate a data file.
-    
-    Returns file information and validation results.
-    """
-    validate_upload(file)
-    
+    # Sanitize and choose suffix
+    basename = os.path.basename(file.filename or "")
+    suffix = os.path.splitext(basename)[1].lower()
+
+    # Re-validate extension and content type defensively
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"File type {suffix} not allowed. Allowed: {', '.join(ALLOWED_EXTENSIONS)}")
+
+    allowed_content_types = {
+        'text/csv', 'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/json', 'application/octet-stream', 'text/plain'
+    }
+    if file.content_type and file.content_type not in allowed_content_types:
+        raise HTTPException(status_code=400, detail=f"Content type {file.content_type} not allowed")
+
+    size = 0
+    tmp_path = None
     try:
-        # Save uploaded file temporarily
-        import tempfile
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename or "")[1]) as tmp_file:
-            content = await file.read()
-            tmp_file.write(content)
+        # Stream write to temp file to avoid loading entire file into memory
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+            while True:
+                chunk = await file.read(8192)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_FILE_SIZE:
+                    try:
+                        tmp_file.close()
+                    except Exception:
+                        pass
+                    try:
+                        os.unlink(tmp_file.name)
+                    except Exception:
+                        pass
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Max size: {MAX_FILE_SIZE // (1024*1024)}MB"
+                    )
+                tmp_file.write(chunk)
             tmp_path = tmp_file.name
-        
+
+        # Perform lightweight content verification based on magic bytes for known binary formats
         try:
-            # Validate file
-            validation = file_validator.validate_file(tmp_path)
-            
-            if not validation['is_valid']:
-                return {
-                    "success": False,
-                    "message": "File validation failed",
-                    "validation": validation
-                }
-            
-            # Load file
-            df = data_processor.load_file(tmp_path)
-            
-            # Validate DataFrame
-            df_validation = file_validator.validate_dataframe(df)
-            validation['dataframe'] = df_validation
-            
-            # Extract metadata
-            metadata = metadata_extractor.extract_metadata(df, tmp_path)
-            
-            # Get quick insights
-            insights = recommendation_engine.get_quick_insights(df)
-            
-            return {
-                "success": True,
-                "message": "File uploaded and validated successfully",
-                "validation": validation,
-                "metadata": metadata,
-                "insights": insights
-            }
-        
-        finally:
-            # Clean up temp file
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-    
-    except DataProcessingError as e:
-        logger.error(f"Data processing error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+            with open(tmp_path, 'rb') as fh:
+                header = fh.read(8)
+            # Parquet files start with b'PAR1'
+            if header.startswith(b'PAR1') and suffix != '.parquet':
+                logger.warning("Uploaded file magic indicates Parquet but extension differs.")
+            # ZIP-based formats (xlsx) start with PK
+            if header.startswith(b'PK') and suffix not in ('.xlsx',):
+                logger.warning("Uploaded file magic indicates ZIP (possibly xlsx) but extension differs.")
+            # Old XLS compound file signature
+            if header.startswith(b'\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1') and suffix not in ('.xls',):
+                logger.warning("Uploaded file magic indicates old XLS but extension differs.")
+            # For text-like types, ensure initial bytes are decodable as UTF-8
+            if suffix in ('.json', '.csv', '.tsv', '.txt'):
+                try:
+                    with open(tmp_path, 'rb') as fh:
+                        sample = fh.read(2048)
+                    sample.decode('utf-8')
+                except Exception:
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+                    raise HTTPException(status_code=400, detail="Uploaded text file is not valid UTF-8")
+        except HTTPException:
+            raise
+        except Exception:
+            logger.warning("Failed to perform detailed file magic checks; proceeding with caution.")
+        return tmp_path
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error uploading file: {str(e)}")
+        # Attempt cleanup on error and return a consistent HTTP error;
+        # safe_save_upload must only return a file path (str) or raise.
+        logger.error(f"Error saving uploaded file: {e}")
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error uploading file: {str(e)}"
+            detail=f"Error saving uploaded file: {str(e)}"
         )
 
 
@@ -160,13 +226,8 @@ async def profile_data(
     validate_upload(file)
     
     try:
-        # Save uploaded file temporarily
-        import tempfile
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename or "")[1]) as tmp_file:
-            content = await file.read()
-            tmp_file.write(content)
-            tmp_path = tmp_file.name
+        # Save uploaded file temporarily using the safe streamer (enforces size/type/magic-byte checks)
+        tmp_path = await safe_save_upload(file)
         
         try:
             # Load file
@@ -228,13 +289,8 @@ async def clean_data(
         # Parse operations
         ops = json.loads(operations)
         
-        # Save uploaded file temporarily
-        import tempfile
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename or "")[1]) as tmp_file:
-            content = await file.read()
-            tmp_file.write(content)
-            tmp_path = tmp_file.name
+        # Save uploaded file temporarily using the safe streamer (enforces size/type/magic-byte checks)
+        tmp_path = await safe_save_upload(file)
         
         try:
             # Load file
@@ -326,13 +382,8 @@ async def get_recommendations(
     validate_upload(file)
     
     try:
-        # Save uploaded file temporarily
-        import tempfile
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename or "")[1]) as tmp_file:
-            content = await file.read()
-            tmp_file.write(content)
-            tmp_path = tmp_file.name
+        # Save uploaded file temporarily using safe async saver (streams, validates extension/content-type/size and does magic-byte checks)
+        tmp_path = await safe_save_upload(file)
         
         try:
             # Load file
@@ -377,13 +428,8 @@ async def optimize_data(
     validate_upload(file)
     
     try:
-        # Save uploaded file temporarily
-        import tempfile
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename or "")[1]) as tmp_file:
-            content = await file.read()
-            tmp_file.write(content)
-            tmp_path = tmp_file.name
+        # Save uploaded file temporarily using safe async saver (streams, validates extension/content-type/size and does magic-byte checks)
+        tmp_path = await safe_save_upload(file)
         
         try:
             # Load file

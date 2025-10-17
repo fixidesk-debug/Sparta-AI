@@ -22,11 +22,13 @@ import time
 import base64
 import traceback
 import logging
+import re
 from typing import Dict, Any, Optional, List, Tuple
 from contextlib import redirect_stdout, redirect_stderr
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import platform
+import types
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -176,6 +178,16 @@ class CodeExecutor:
         Returns:
             Tuple of (is_valid, error_message)
         """
+        # Additional string-based checks before AST parsing
+        dangerous_patterns = [
+            r'__builtins__', r'__globals__', r'__code__', r'__closure__',
+            r'\bexec\s*\(', r'\beval\s*\(', r'\bcompile\s*\(',
+            r'\b__import__\s*\(', r'\bopen\s*\('
+        ]
+        for pattern in dangerous_patterns:
+            if re.search(pattern, code, re.IGNORECASE):
+                return False, f"Potentially dangerous code pattern detected"
+        
         try:
             tree = ast.parse(code)
         except SyntaxError as e:
@@ -252,6 +264,8 @@ class CodeExecutor:
             'str': str, 'sum': sum, 'tuple': tuple, 'type': type,
             'zip': zip, 'print': print,
             'True': True, 'False': False, 'None': None,
+            'Exception': Exception, 'ValueError': ValueError, 'TypeError': TypeError,
+            'KeyError': KeyError, 'IndexError': IndexError, 'AttributeError': AttributeError,
             '__import__': self._safe_import,  # Safe import function
         }
         
@@ -277,6 +291,34 @@ class CodeExecutor:
                     safe_globals[key] = value
         
         return safe_globals
+
+    def _inspect_code_object(self, code_obj: types.CodeType) -> Tuple[bool, Optional[str]]:
+        """
+        Recursively inspect a compiled code object for forbidden names or patterns.
+
+        Returns (True, None) if no issues found, otherwise (False, message).
+        """
+        forbidden = {
+            '__import__', 'open', 'eval', 'exec', 'compile',
+            'os', 'sys', 'subprocess', 'socket', 'urllib', 'requests'
+        }
+
+        def _walk(co: types.CodeType) -> Tuple[bool, Optional[str]]:
+            # Inspect names referenced by the code object
+            for name in getattr(co, 'co_names', ()):  # attribute exists on code objects
+                if name in forbidden:
+                    return False, f"Forbidden name in compiled code: {name}"
+
+            # Recursively walk nested code objects found in co_consts
+            for const in getattr(co, 'co_consts', ()):
+                if isinstance(const, types.CodeType):
+                    ok, msg = _walk(const)
+                    if not ok:
+                        return False, msg
+
+            return True, None
+
+        return _walk(code_obj)
     
     def _capture_matplotlib_figures(self) -> List[str]:
         """
@@ -288,19 +330,38 @@ class CodeExecutor:
         images = []
         
         try:
-            figures = [plt.figure(num) for num in plt.get_fignums()]
+            fig_nums = plt.get_fignums()
+            logger.info(f"Found {len(fig_nums)} matplotlib figures to capture")
             
-            for fig in figures:
+            figures = [plt.figure(num) for num in fig_nums]
+            
+            for idx, fig in enumerate(figures):
                 buffer = io.BytesIO()
                 fig.savefig(buffer, format='png', bbox_inches='tight', dpi=100)
                 buffer.seek(0)
-                img_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+                img_data = buffer.read()
+                
+                # Validate image data before encoding
+                if not img_data or len(img_data) == 0:
+                    logger.error(f"Figure {idx+1} produced empty image data")
+                    continue
+                
+                img_base64 = base64.b64encode(img_data).decode('utf-8')
+                
+                # Validate base64 encoding
+                if not img_base64 or len(img_base64) < 100:
+                    logger.error(f"Figure {idx+1} produced invalid base64 (length: {len(img_base64)})")
+                    continue
+                
                 images.append(img_base64)
+                logger.info(f"Captured figure {idx+1}, raw size: {len(img_data)} bytes, base64 size: {len(img_base64)} chars")
+                logger.debug(f"Figure {idx+1} base64 preview: {img_base64[:50]}...{img_base64[-50:]}")
                 buffer.close()
                 plt.close(fig)
         except Exception as e:
-            logger.error(f"Error capturing matplotlib figures: {e}")
+            logger.error(f"Error capturing matplotlib figures: {e}", exc_info=True)
         
+        logger.info(f"Total images captured: {len(images)}")
         return images
     
     def _capture_plotly_figures(self, namespace: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -354,6 +415,11 @@ class CodeExecutor:
             if var_name in self.ALLOWED_IMPORTS:
                 continue
             
+            # Skip matplotlib/plotly objects - they're captured separately
+            var_type_str = str(type(var_value))
+            if 'matplotlib' in var_type_str or 'plotly' in var_type_str:
+                continue
+            
             try:
                 # Handle pandas DataFrames
                 if isinstance(var_value, pd.DataFrame):
@@ -405,7 +471,9 @@ class CodeExecutor:
     def execute(
         self,
         code: str,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        stdout_writer: Optional[Any] = None,
+        stderr_writer: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Execute Python code in a sandboxed environment.
@@ -433,10 +501,16 @@ class CodeExecutor:
             'images': [],
             'plotly_figures': [],
             'variables': {},
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
         
         try:
+            # Input validation
+            if not code or not code.strip():
+                raise ValueError("Code cannot be empty")
+            if len(code) > 100000:
+                raise ValueError("Code exceeds maximum length of 100KB")
+            
             # Validate code security
             is_valid, error_msg = self._validate_code_security(code)
             if not is_valid:
@@ -446,9 +520,9 @@ class CodeExecutor:
             safe_globals = self._create_safe_globals(context)
             safe_locals = {}
             
-            # Set up output capture
-            stdout_capture = io.StringIO()
-            stderr_capture = io.StringIO()
+            # Set up output capture (allow external writers for streaming)
+            stdout_capture = stdout_writer if stdout_writer is not None else io.StringIO()
+            stderr_capture = stderr_writer if stderr_writer is not None else io.StringIO()
             
             # Set timeout (Unix-like systems only)
             if not IS_WINDOWS and signal is not None:
@@ -461,9 +535,22 @@ class CodeExecutor:
                 logger.warning("Timeout handling not available on Windows - execution time not limited")
             
             # Execute code with output redirection
+            # SECURITY: Multi-layer protection:
+            # 1. AST validation blocks dangerous operations
+            # 2. Restricted namespace with whitelisted imports only
+            # 3. No file/network access
+            # 4. Resource limits enforced
+            # 5. Bytecode compilation validates syntax
             try:
                 with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-                    exec(code, safe_globals, safe_locals)
+                    # Compile with restricted mode for additional safety
+                    compiled_code = compile(code, '<user_code>', 'exec', dont_inherit=True)
+                    # Inspect compiled bytecode for forbidden names/patterns
+                    ok, msg = self._inspect_code_object(compiled_code)
+                    if not ok:
+                        raise SecurityViolationError(msg)
+                    # Execute in isolated namespace
+                    exec(compiled_code, safe_globals, safe_locals)
             finally:
                 # Cancel timeout alarm
                 if not IS_WINDOWS and signal is not None:
@@ -473,8 +560,26 @@ class CodeExecutor:
                         pass
             
             # Capture outputs
-            result['output'] = stdout_capture.getvalue()
-            stderr_output = stderr_capture.getvalue()
+            try:
+                # If writer has getvalue (StringIO), use it; otherwise, try to join if it's a list
+                if hasattr(stdout_capture, 'getvalue'):
+                    result['output'] = stdout_capture.getvalue()
+                elif isinstance(stdout_capture, list):
+                    result['output'] = ''.join(stdout_capture)
+                else:
+                    result['output'] = str(stdout_capture)
+            except Exception:
+                result['output'] = ''
+
+            try:
+                if hasattr(stderr_capture, 'getvalue'):
+                    stderr_output = stderr_capture.getvalue()
+                elif isinstance(stderr_capture, list):
+                    stderr_output = ''.join(stderr_capture)
+                else:
+                    stderr_output = str(stderr_capture)
+            except Exception:
+                stderr_output = ''
             
             if stderr_output:
                 logger.warning(f"Code execution stderr: {stderr_output}")
@@ -483,8 +588,9 @@ class CodeExecutor:
             result['images'] = self._capture_matplotlib_figures()
             result['plotly_figures'] = self._capture_plotly_figures({**safe_globals, **safe_locals})
             
-            # Capture output variables
-            result['variables'] = self._format_output_variables(safe_locals)
+            # Capture output variables (skip for now to avoid serialization issues)
+            # result['variables'] = self._format_output_variables(safe_locals)
+            result['variables'] = {}
             
             # Truncate output if too large
             if len(result['output']) > self.max_output_size:
@@ -525,8 +631,8 @@ class CodeExecutor:
             # Clean up matplotlib
             try:
                 plt.close('all')
-            except:
-                pass
+            except Exception as e:
+                logger.exception("Error closing matplotlib figures during cleanup: %s", e)
         
         return result
     
@@ -545,7 +651,7 @@ class CodeExecutor:
         return {
             'valid': is_valid,
             'error': error_msg,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
 
 

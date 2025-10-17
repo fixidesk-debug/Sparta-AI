@@ -7,7 +7,7 @@ from sqlalchemy import text
 from pydantic import BaseModel
 from typing import Dict, Optional
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.db.session import get_db
 from app.db.redis import get_redis
@@ -37,7 +37,7 @@ async def health_check():
     """
     return HealthStatus(
         status="healthy",
-        timestamp=datetime.utcnow().isoformat()
+        timestamp=datetime.now(timezone.utc).isoformat()
     )
 
 
@@ -92,7 +92,7 @@ async def detailed_health_check(db: Session = Depends(get_db)):
     
     return HealthStatus(
         status=overall_status,
-        timestamp=datetime.utcnow().isoformat(),
+        timestamp=datetime.now(timezone.utc).isoformat(),
         dependencies=dependencies
     )
 

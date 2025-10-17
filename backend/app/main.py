@@ -10,7 +10,12 @@ from contextlib import asynccontextmanager
 from typing import cast, Any
 import logging
 
-from app.api.v1.endpoints import auth, files, query, viz, exec, health, websocket, data, statistics
+from app.api.v1.endpoints import auth, files, query, viz, exec, health, websocket, data, statistics, insights, export, datasources, ml_models, widgets
+from app.api.v1.endpoints import validation
+from app.api.v1.endpoints import notebooks
+from app.api.v1.endpoints import data_catalog
+from app.api.v1.endpoints import scheduled_reports, transformations, sharing, templates, ai_insights, nl_chart, history, versions, data_preview, sql_query
+from app.api.v1.endpoints import enhanced_datasources
 from app.core.config import settings
 from app.core.logging_config import setup_logging
 from app.core.middleware import LoggingMiddleware, SecurityHeadersMiddleware, RateLimitMiddleware
@@ -25,7 +30,10 @@ from app.db.models import Base
 from app.services.websocket_manager import ws_manager
 
 # Setup logging
-setup_logging(log_level="INFO", log_file="logs/sparta_ai.log")
+import os
+import sys
+is_testing = "pytest" in sys.modules or any("pytest" in arg for arg in sys.argv) or "PYTEST_CURRENT_TEST" in os.environ
+setup_logging(log_level="INFO", log_file="logs/sparta_ai.log", enable_file_logging=not is_testing)
 logger = logging.getLogger(__name__)
 
 
@@ -108,22 +116,28 @@ app = FastAPI(
 )
 
 # CORS middleware - must be added before other middleware
+# Allow frontend to access backend API
 allowed_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:8000",
     "http://127.0.0.1:8000"
 ]
+# Allow root-hosted frontend (nginx serving on default HTTP port)
+allowed_origins.extend([
+    "http://localhost",
+    "http://127.0.0.1",
+])
 if hasattr(settings, 'FRONTEND_URL') and settings.FRONTEND_URL:
     allowed_origins.append(settings.FRONTEND_URL)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=["*"],  # Allow all origins for development
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Request-ID", "X-Process-Time"]
+    expose_headers=["*"]
 )
 
 # Custom middleware
@@ -145,24 +159,55 @@ app.include_router(viz.router, prefix="/api/v1/viz", tags=["Visualization"])
 app.include_router(exec.router, prefix="/api/v1/exec", tags=["Execution"])
 app.include_router(data.router, prefix="/api/v1/data", tags=["Data Processing"])
 app.include_router(statistics.router, prefix="/api/v1/statistics", tags=["Statistical Analysis"])
+app.include_router(insights.router, prefix="/api/v1/insights", tags=["AI Insights"])
+app.include_router(export.router, prefix="/api/v1/export", tags=["Export"])
+app.include_router(datasources.router, prefix="/api/v1/datasources", tags=["Data Sources"])
+app.include_router(enhanced_datasources.router, prefix="/api/v1/connectors", tags=["Enhanced Data Connectors"])
 app.include_router(websocket.router, prefix="/api/v1/ws", tags=["WebSocket"])
+app.include_router(ml_models.router, prefix="/api/v1/ml", tags=["ML Models"])
+app.include_router(validation.router, prefix="/api/v1/validation", tags=["Validation"])
+app.include_router(widgets.router, prefix="/api/v1/widgets", tags=["Widgets"])
+app.include_router(data_catalog.router, prefix="/api/v1/catalog", tags=["Data Catalog"])
+app.include_router(notebooks.router, prefix="/api/v1/notebooks", tags=["Notebooks"])
+app.include_router(scheduled_reports.router, prefix="/api/v1/reports", tags=["Scheduled Reports"])
+app.include_router(transformations.router, prefix="/api/v1/transform", tags=["Data Transformations"])
+app.include_router(sharing.router, prefix="/api/v1/sharing", tags=["Sharing & Collaboration"])
+app.include_router(templates.router, prefix="/api/v1/templates", tags=["Analysis Templates"])
+app.include_router(ai_insights.router, prefix="/api/v1/ai", tags=["AI Insights"])
+app.include_router(nl_chart.router, prefix="/api/v1/nl", tags=["Natural Language"])
+app.include_router(history.router, prefix="/api/v1/history", tags=["Operation History"])
+app.include_router(versions.router, prefix="/api/v1/versions", tags=["Data Versioning"])
+app.include_router(data_preview.router, prefix="/api/v1/preview", tags=["Data Preview"])
+app.include_router(sql_query.router, prefix="/api/v1/sql", tags=["SQL Execution"])
+
+# API endpoint paths
+DOCS_PATH = app.docs_url or "/docs"
+HEALTH_PATH = "/health"
 
 
 @app.get("/")
 async def root():
     """Root endpoint with API information"""
-    response = dict(
-        message="Welcome to Sparta AI API",
-        version=app.version,
-        docs="/docs",
-        health="/health"
-    )
-    return response
+    return {
+        "message": "Welcome to Sparta AI API",
+        "version": app.version,
+        "docs": DOCS_PATH,
+        "health": HEALTH_PATH
+    }
 
 
 @app.get("/api/v1/info")
 async def api_info():
     """API information and capabilities"""
+    # Use a configurable API base path to avoid hardcoded endpoint strings.
+    base_path = getattr(settings, "API_V1_PREFIX", "/api/v1")
+    endpoints = {
+        "auth": f"{base_path}/auth",
+        "files": f"{base_path}/files",
+        "query": f"{base_path}/query",
+        "chat": f"{base_path}/ws/chat",
+        "health": "/health",
+    }
     return {
         "name": "Sparta AI",
         "version": app.version,
@@ -176,11 +221,5 @@ async def api_info():
             "Data Visualization",
             "Redis Caching"
         ],
-        "endpoints": {
-            "auth": "/api/v1/auth",
-            "files": "/api/v1/files",
-            "query": "/api/v1/query",
-            "chat": "/api/v1/ws/chat",
-            "health": "/health"
-        }
+        "endpoints": endpoints
     }

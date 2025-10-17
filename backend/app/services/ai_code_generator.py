@@ -5,7 +5,7 @@ Generates Python data analysis code from natural language queries
 from typing import Optional, Dict, Any, List, AsyncGenerator
 from sqlalchemy.orm import Session
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.services.ai_providers import AIProvider, AIProviderFactory, AIProviderBase
 from app.services.prompt_templates import AnalysisType, PromptTemplates
@@ -47,7 +47,7 @@ class CodeGenerationResult:
         self.explanation = explanation
         self.analysis_type = analysis_type
         self.metadata = metadata or {}
-        self.timestamp = datetime.utcnow()
+        self.timestamp = datetime.now(timezone.utc)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -67,39 +67,24 @@ class AICodeGenerator:
     
     def __init__(
         self,
-        provider: AIProvider = AIProvider.OPENAI,
+        provider: AIProvider = AIProvider.GROQ,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
         temperature: float = 0.3,
         max_tokens: int = 2000
     ):
-        """
-        Initialize AI code generator
-        
-        Args:
-            provider: AI provider to use
-            api_key: API key (uses settings if not provided)
-            model: Model name (uses default if not provided)
-            temperature: Sampling temperature (lower = more deterministic)
-            max_tokens: Maximum tokens to generate
-        """
         self.provider_type = provider
         self.temperature = temperature
         self.max_tokens = max_tokens
         
-        # Get API key from settings if not provided
         if api_key is None:
-            if provider == AIProvider.OPENAI:
-                api_key = settings.OPENAI_API_KEY
-            elif provider == AIProvider.ANTHROPIC:
-                api_key = getattr(settings, 'ANTHROPIC_API_KEY', None)
+            api_key = getattr(settings, 'GROQ_API_KEY', None)
         
         if not api_key:
-            raise ValueError(f"API key not provided for {provider.value}")
+            raise ValueError(f"GROQ_API_KEY not configured")
         
-        # Create provider
         self.provider: AIProviderBase = AIProviderFactory.create_provider(
-            provider=provider,
+            provider=AIProvider.GROQ,
             api_key=api_key,
             model=model
         )
@@ -449,7 +434,7 @@ async def generate_analysis_code(
     file_id: int,
     user_id: int,
     db: Session,
-    provider: AIProvider = AIProvider.OPENAI,
+    provider: AIProvider = AIProvider.GROQ,
     session_id: Optional[str] = None
 ) -> CodeGenerationResult:
     """

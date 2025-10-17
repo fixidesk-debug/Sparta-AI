@@ -91,17 +91,26 @@ class DataProcessor:
             Detected encoding (e.g., 'utf-8', 'latin-1')
         """
         try:
-            with open(file_path, 'rb') as f:
+            # Validate file path to prevent path traversal
+            path = Path(file_path).resolve()
+            base_dir = Path("uploads").resolve()
+            if not str(path).startswith(str(base_dir)):
+                raise ValueError("Access denied: Path outside allowed directory")
+            if not path.exists():
+                raise FileNotFoundError(f"File not found: {file_path}")
+
+            with open(str(path), 'rb') as f:
                 raw_data = f.read(sample_size)
-                result = chardet.detect(raw_data)
-                encoding = result['encoding']
-                confidence = result['confidence']
+                # Ensure chardet result is handled safely
+                result = chardet.detect(raw_data) if raw_data else {'encoding': 'utf-8', 'confidence': 1.0}
+                encoding = result.get('encoding') if isinstance(result, dict) else None
+                confidence = result.get('confidence') if isinstance(result, dict) else 0.0
                 
                 logger.info(f"Detected encoding: {encoding} (confidence: {confidence:.2%})")
                 
-                # Default to utf-8 if confidence is too low
-                if confidence < 0.7:
-                    logger.warning("Low encoding confidence, defaulting to utf-8")
+                # Default to utf-8 if confidence is too low or encoding not detected
+                if not encoding or confidence < 0.7:
+                    logger.warning("Low encoding confidence or no encoding detected, defaulting to utf-8")
                     return 'utf-8'
                 
                 return encoding or 'utf-8'
@@ -121,7 +130,15 @@ class DataProcessor:
             Detected delimiter
         """
         try:
-            with open(file_path, 'r', encoding=encoding) as f:
+            # Validate file path to prevent path traversal
+            path = Path(file_path).resolve()
+            base_dir = Path("uploads").resolve()
+            if not str(path).startswith(str(base_dir)):
+                raise ValueError("Access denied: Path outside allowed directory")
+            if not path.exists():
+                raise FileNotFoundError(f"File not found: {file_path}")
+
+            with open(str(path), 'r', encoding=encoding) as f:
                 sample = f.read(4096)
                 
             # Test common delimiters
@@ -155,8 +172,11 @@ class DataProcessor:
         Returns:
             Dictionary with file metadata
         """
-        path = Path(file_path)
-        
+        # Validate file path to prevent path traversal
+        path = Path(file_path).resolve()
+        base_dir = Path("uploads").resolve()
+        if not str(path).startswith(str(base_dir)):
+            raise ValueError("Access denied: Path outside allowed directory")
         if not path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
         
@@ -194,6 +214,9 @@ class DataProcessor:
         """
         # Validate file path to prevent path traversal
         path = Path(file_path).resolve()
+        base_dir = Path("uploads").resolve()
+        if not str(path).startswith(str(base_dir)):
+            raise ValueError("Access denied: Path outside allowed directory")
         if not path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
         
@@ -258,6 +281,9 @@ class DataProcessor:
         try:
             # Validate file path to prevent path traversal
             path = Path(file_path).resolve()
+            base_dir = Path("uploads").resolve()
+            if not str(path).startswith(str(base_dir)):
+                raise ValueError("Access denied: Path outside allowed directory")
             if not path.exists():
                 raise FileNotFoundError(f"File not found: {file_path}")
             
@@ -297,6 +323,9 @@ class DataProcessor:
         try:
             # Validate file path to prevent path traversal
             path = Path(file_path).resolve()
+            base_dir = Path("uploads").resolve()
+            if not str(path).startswith(str(base_dir)):
+                raise ValueError("Access denied: Path outside allowed directory")
             if not path.exists():
                 raise FileNotFoundError(f"File not found: {file_path}")
             
@@ -350,6 +379,9 @@ class DataProcessor:
         try:
             # Validate file path to prevent path traversal
             path = Path(file_path).resolve()
+            base_dir = Path("uploads").resolve()
+            if not str(path).startswith(str(base_dir)):
+                raise ValueError("Access denied: Path outside allowed directory")
             if not path.exists():
                 raise FileNotFoundError(f"File not found: {file_path}")
             
@@ -429,7 +461,16 @@ class DataProcessor:
             file_format: Force specific format (auto-detected if None)
             **kwargs: Format-specific arguments
         """
+        # Resolve and validate path to prevent path traversal
+        base_dir = Path("uploads").resolve()
         path = Path(file_path)
+        try:
+            path = path.resolve()
+        except Exception:
+            # If resolving fails, treat as invalid/unauthorized
+            raise ValueError("Access denied: Invalid file path")
+        if not str(path).startswith(str(base_dir)):
+            raise ValueError("Access denied: Path outside allowed directory")
         extension = path.suffix.lower()
         
         # Determine format

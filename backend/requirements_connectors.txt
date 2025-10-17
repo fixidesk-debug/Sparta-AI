@@ -1,0 +1,28 @@
+# Enhanced Database Connectors for SPARTA AI
+# Install these packages to enable connections to various data sources
+
+# Core SQL Databases
+psycopg2-binary>=2.9.0          # PostgreSQL
+PyMySQL>=1.0.0                  # MySQL
+pyodbc>=4.0.0                   # SQL Server (requires ODBC driver)
+
+# NoSQL Databases
+pymongo>=4.0.0                  # MongoDB
+
+# Cloud Data Warehouses
+google-cloud-bigquery>=3.0.0    # Google BigQuery
+snowflake-connector-python>=3.0.0  # Snowflake
+databricks-sql-connector>=2.0.0 # Databricks
+
+# Analytics Databases
+vertica-python>=1.3.0           # Vertica
+
+# Additional Dependencies
+sqlalchemy>=2.0.0               # SQL toolkit
+pandas>=2.0.0                   # Data manipulation
+google-auth>=2.0.0              # Google authentication
+google-auth-oauthlib>=1.0.0     # Google OAuth
+
+# Optional: For better performance
+pyarrow>=10.0.0                 # Arrow format support
+fastparquet>=2023.0.0           # Parquet file support
